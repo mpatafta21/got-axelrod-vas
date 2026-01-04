@@ -18,7 +18,18 @@ class Simulacija:
         a.zabiljezi(b.naziv, potez_a, potez_b)
         b.zabiljezi(a.naziv, potez_b, potez_a)
 
-    def turnir_svatko_sa_svakim(self, agenti: List[KucaAgent]) -> None:
+        broj_suradnji = (1 if potez_a == "S" else 0) + (1 if potez_b == "S" else 0)
+        return broj_suradnji, 2
+
+    def turnir_svatko_sa_svakim(self, agenti: List[KucaAgent]) -> Dict[str, int]:
+
+        ukupno_suradnji = 0
+        ukupno_poteza = 0
+
         for i in range(len(agenti)):
             for j in range(i + 1, len(agenti)):
-                self.odigraj_susret(agenti[i], agenti[j])
+                s, t = self.odigraj_susret(agenti[i], agenti[j])
+                ukupno_suradnji += s
+                ukupno_poteza += t
+                
+        return {"suradnje": ukupno_suradnji, "poteza": ukupno_poteza}
