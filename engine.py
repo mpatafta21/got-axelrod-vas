@@ -49,3 +49,33 @@ class Simulacija:
             rezultat["suradnje_agenta"] = suradnje_agenta
             rezultat["poteza_agenta"] = poteza_agenta
         return rezultat
+    
+    
+    def odigraj_sezonu_sa_dogadjajima(self, agenti):
+        """
+        Odradi jednu sezonu (svatko sa svakim) i vrati listu događaja:
+        (kucaA, kucaB, potezA, potezB, bodA, bodB)
+        """
+        dogadjaji = []
+        for i in range(len(agenti)):
+            for j in range(i + 1, len(agenti)):
+                a = agenti[i]
+                b = agenti[j]
+
+                potez_a = a.odaberi_potez(b.naziv)
+                potez_b = b.odaberi_potez(a.naziv)
+
+                bodovi_a, bodovi_b = self.matrica_isplate[(potez_a, potez_b)]
+                a.bodovi += bodovi_a
+                b.bodovi += bodovi_b
+
+                a.zabiljezi(b.naziv, potez_a, potez_b)
+                b.zabiljezi(a.naziv, potez_b, potez_a)
+
+                # update learning (ako je agent learning)
+                a.azuriraj_ucenje(b.naziv, potez_a, bodovi_a)
+                b.azuriraj_ucenje(a.naziv, potez_b, bodovi_b)
+
+                dogadjaji.append((a.naziv, b.naziv, potez_a, potez_b, bodovi_a, bodovi_b))
+        return dogadjaji
+
