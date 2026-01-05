@@ -7,7 +7,7 @@ class Simulacija:
     def __init__(self, matrica_isplate: Dict[Tuple[Potez, Potez], Tuple[int, int]]):
         self.matrica_isplate = matrica_isplate
 
-    def odigraj_susret(self, a: KucaAgent, b: KucaAgent) -> None:
+    def odigraj_susret(self, a: KucaAgent, b: KucaAgent) -> Tuple[int, int, Potez, Potez]:
         potez_a = a.odaberi_potez(b.naziv)
         potez_b = b.odaberi_potez(a.naziv)
 
@@ -15,21 +15,37 @@ class Simulacija:
         a.bodovi += bodovi_a
         b.bodovi += bodovi_b
 
+        a.azuriraj_ucenje(b.naziv, potez_a, bodovi_a)
+        b.azuriraj_ucenje(a.naziv, potez_b, bodovi_b)
+
         a.zabiljezi(b.naziv, potez_a, potez_b)
         b.zabiljezi(a.naziv, potez_b, potez_a)
 
         broj_suradnji = (1 if potez_a == "S" else 0) + (1 if potez_b == "S" else 0)
-        return broj_suradnji, 2
+        return broj_suradnji, 2, potez_a, potez_b
 
-    def turnir_svatko_sa_svakim(self, agenti: List[KucaAgent]) -> Dict[str, int]:
+    def turnir_svatko_sa_svakim(self, agenti: List[KucaAgent], track_agent_name: str | None = None) -> Dict[str, int]:
 
         ukupno_suradnji = 0
         ukupno_poteza = 0
+        suradnje_agenta = 0
+        poteza_agenta = 0
 
         for i in range(len(agenti)):
             for j in range(i + 1, len(agenti)):
-                s, t = self.odigraj_susret(agenti[i], agenti[j])
+                s, t, potez_a, potez_b = self.odigraj_susret(agenti[i], agenti[j])
                 ukupno_suradnji += s
                 ukupno_poteza += t
+                if track_agent_name is not None:
+                    if agenti[i].naziv == track_agent_name:
+                        poteza_agenta += 1
+                        suradnje_agenta += 1 if potez_a == "S" else 0
+                    if agenti[j].naziv == track_agent_name:
+                        poteza_agenta += 1
+                        suradnje_agenta += 1 if potez_b == "S" else 0
                 
-        return {"suradnje": ukupno_suradnji, "poteza": ukupno_poteza}
+        rezultat = {"suradnje": ukupno_suradnji, "poteza": ukupno_poteza}
+        if track_agent_name is not None:
+            rezultat["suradnje_agenta"] = suradnje_agenta
+            rezultat["poteza_agenta"] = poteza_agenta
+        return rezultat
