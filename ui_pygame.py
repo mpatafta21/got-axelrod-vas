@@ -1,6 +1,7 @@
 
 import math
 import os
+import ui_stats
 import sys
 import time
 from dataclasses import dataclass
@@ -90,6 +91,49 @@ def boja_veze(potez_a: Potez, potez_b: Potez) -> Tuple[int, int, int]:
     return BOJA_IZDAJA
 
 
+def nacrtaj_strelicu(screen, from_pos: Tuple[int, int], to_pos: Tuple[int, int], color: Tuple[int, int, int]) -> None:
+    dx = to_pos[0] - from_pos[0]
+    dy = to_pos[1] - from_pos[1]
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return
+    ux = dx / length
+    uy = dy / length
+
+    end_x = to_pos[0] - ux * (RADIUS_CVOR + 1)
+    end_y = to_pos[1] - uy * (RADIUS_CVOR + 1)
+    arrow_len = 10
+    arrow_w = 5
+    base_x = end_x - ux * arrow_len
+    base_y = end_y - uy * arrow_len
+    perp_x = -uy
+    perp_y = ux
+
+    left = (base_x + perp_x * arrow_w, base_y + perp_y * arrow_w)
+    right = (base_x - perp_x * arrow_w, base_y - perp_y * arrow_w)
+    tip = (end_x, end_y)
+    outline_len = arrow_len + 2
+    outline_w = arrow_w + 2
+    obase_x = end_x - ux * outline_len
+    obase_y = end_y - uy * outline_len
+    oleft = (obase_x + perp_x * outline_w, obase_y + perp_y * outline_w)
+    oright = (obase_x - perp_x * outline_w, obase_y - perp_y * outline_w)
+    pygame.draw.polygon(screen, BOJA_IZDAJA, [oleft, oright, tip])
+    pygame.draw.polygon(screen, (0, 0, 0), [left, right, tip])
+
+
+def udaljenost_tocke_od_duzine(px: int, py: int, x1: int, y1: int, x2: int, y2: int) -> float:
+    dx = x2 - x1
+    dy = y2 - y1
+    if dx == 0 and dy == 0:
+        return math.hypot(px - x1, py - y1)
+    t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+    t = max(0.0, min(1.0, t))
+    proj_x = x1 + t * dx
+    proj_y = y1 + t * dy
+    return math.hypot(px - proj_x, py - proj_y)
+
+
 def tekst_dogadjaja(d: Dogadjaj) -> str:
     if d.potez_a == "S" and d.potez_b == "S":
         return f"Savez: {d.a} ↔ {d.b}  (+{d.bod_a}/+{d.bod_b})"
@@ -122,7 +166,7 @@ def main() -> None:
     panel_rect = pygame.Rect(W - panel_w, 0, panel_w, H)
 
     # Stanje simulacije
-    def reset() -> Tuple[List[KucaAgent], Simulacija, int, List[str], Dict[Tuple[str, str], Dogadjaj], List[str], int, int, float]:
+    def reset() -> Tuple[List[KucaAgent], Simulacija, int, List[str], Dict[Tuple[str, str], Dogadjaj], List[str], int, int, float, Dict[str, Dict[str, int]], List[float], List[float], str, Dict[Tuple[str, str], Dict[str, int]], Dict[str, Dict[str, int]]]:
         agenti_local = kreiraj_agente()
         sim_local = Simulacija(MATRICA_ISPLATE)
         sezona_local = 0
@@ -132,9 +176,42 @@ def main() -> None:
         total_suradnje = 0
         total_poteza = 0
         last_season_pct = 0.0
-        return agenti_local, sim_local, sezona_local, kuce, zadnji_ishodi, log, total_suradnje, total_poteza, last_season_pct
+        agent_stats, global_pct_by_season, learning_pct_by_season, learning_agent, pair_stats, rank_stats = ui_stats.init_stats(agenti_local)
+        return (
+            agenti_local,
+            sim_local,
+            sezona_local,
+            kuce,
+            zadnji_ishodi,
+            log,
+            total_suradnje,
+            total_poteza,
+            last_season_pct,
+            agent_stats,
+            global_pct_by_season,
+            learning_pct_by_season,
+            learning_agent,
+            pair_stats,
+            rank_stats,
+        )
 
-    agenti, sim, sezona, kuce, zadnji_ishodi, log, total_suradnje, total_poteza, last_season_pct = reset()
+    (
+        agenti,
+        sim,
+        sezona,
+        kuce,
+        zadnji_ishodi,
+        log,
+        total_suradnje,
+        total_poteza,
+        last_season_pct,
+        agent_stats,
+        global_pct_by_season,
+        learning_pct_by_season,
+        learning_agent,
+        pair_stats,
+        rank_stats,
+    ) = reset()
 
     pozicije = pozicioniraj_kuce(
         kuce,
@@ -146,32 +223,36 @@ def main() -> None:
     pauza = True
     brzina = 1.0  # sezona u sekundi
     akumulirano = 0.0
+    show_stats = False
+    stats_tab = 0
 
     # za "blink" efekat aktivnog događaja u sezoni
     aktivne_veze: List[Tuple[str, str]] = []
 
     def odigraj_jednu_sezonu():
         nonlocal sezona, aktivne_veze, total_suradnje, total_poteza, last_season_pct
+        nonlocal agent_stats, global_pct_by_season, learning_pct_by_season, learning_agent, pair_stats, rank_stats
         sezona += 1
         aktivne_veze = []
-        season_suradnje = 0
-        season_poteza = 0
-
         dog = sim.odigraj_sezonu_sa_dogadjajima(agenti)
         # uzmi zadnje ishode po paru (za crtanje veza)
         for (a, b, pa, pb, ba, bb) in dog:
             key = tuple(sorted((a, b)))
             zadnji_ishodi[key] = Dogadjaj(a=a, b=b, potez_a=pa, potez_b=pb, bod_a=ba, bod_b=bb)
             aktivne_veze.append(key)
-            season_suradnje += (1 if pa == "S" else 0) + (1 if pb == "S" else 0)
-            season_poteza += 2
 
+        season_suradnje, season_poteza, last_season_pct = ui_stats.update_stats_for_season(
+            dog,
+            agent_stats,
+            global_pct_by_season,
+            learning_pct_by_season,
+            learning_agent,
+            pair_stats,
+            rank_stats,
+            agenti,
+        )
         total_suradnje += season_suradnje
         total_poteza += season_poteza
-        if season_poteza > 0:
-            last_season_pct = 100.0 * season_suradnje / season_poteza
-        else:
-            last_season_pct = 0.0
 
         # log: uzmi par najzanimljivijih događaja (npr. izdaje) + 3 random
         dogadjaji = [zadnji_ishodi[tuple(sorted((d[0], d[1])))] for d in dog]
@@ -194,8 +275,8 @@ def main() -> None:
         screen.blit(sub, (panel_rect.x + 16, 44))
 
         # Kontrole
-        ctrl1 = font_small.render("SPACE: pauza  |  N: step  |  +/-: brzina", True, BOJA_SUBT)
-        ctrl2 = font_small.render("R: reset  |  S: screenshot  |  ESC: izlaz", True, BOJA_SUBT)
+        ctrl1 = font_small.render("SPACE: pauza  |  N: step  |  +/-: brzina   |   R: reset", True, BOJA_SUBT)
+        ctrl2 = font_small.render("S: screenshot  |  T: stats  |  E: export  |  ESC: izlaz", True, BOJA_SUBT)
         screen.blit(ctrl1, (panel_rect.x + 16, 70))
         screen.blit(ctrl2, (panel_rect.x + 16, 92))
 
@@ -214,8 +295,12 @@ def main() -> None:
             text_y = y + 6 - (txt.get_height() // 2)
             screen.blit(txt, (legend_x + 20, text_y))
 
+        mx, my = pygame.mouse.get_pos()
+
         # Veze (mapa)
         # crtaj sve parove za koje imamo zadnji ishod
+        hovered_edge_text = None
+        hovered_edge_dist = 9999.0
         for key, d in zadnji_ishodi.items():
             a, b = key
             x1, y1 = pozicije[a]
@@ -236,8 +321,28 @@ def main() -> None:
             else:
                 pygame.draw.line(screen, col, (x1, y1), (x2, y2), w)
 
+            if (d.potez_a, d.potez_b) in [("I", "S"), ("S", "I")]:
+                if d.potez_a == "I":
+                    izdajnik = d.a
+                    zrtva = d.b
+                else:
+                    izdajnik = d.b
+                    zrtva = d.a
+                nacrtaj_strelicu(screen, pozicije[izdajnik], pozicije[zrtva], BOJA_IZDAJA)
+
+            dist = udaljenost_tocke_od_duzine(mx, my, x1, y1, x2, y2)
+            if dist < 6 and dist < hovered_edge_dist:
+                hovered_edge_dist = dist
+                if d.potez_a == "S" and d.potez_b == "S":
+                    hovered_edge_text = f"Savez: {d.a} <-> {d.b}"
+                elif d.potez_a == "I" and d.potez_b == "I":
+                    hovered_edge_text = f"Sukob: {d.a} x {d.b}"
+                elif d.potez_a == "I" and d.potez_b == "S":
+                    hovered_edge_text = f"Izdaja: {d.a} -> {d.b}"
+                else:
+                    hovered_edge_text = f"Izdaja: {d.b} -> {d.a}"
+
         # Čvorovi kuća
-        mx, my = pygame.mouse.get_pos()
         hovered = None
         for a in agenti:
             x, y = pozicije[a.naziv]
@@ -276,6 +381,14 @@ def main() -> None:
             screen.blit(tip1, (tx + 7, ty + 6))
             screen.blit(tip2, (tx + 7, ty + 6 + tip1.get_height()))
             screen.blit(tip3, (tx + 7, ty + 6 + tip1.get_height() + tip2.get_height()))
+        elif hovered_edge_text:
+            tip = font_small.render(hovered_edge_text, True, BOJA_TEKST)
+            tx, ty = mx + 12, my + 12
+            w = tip.get_width() + 14
+            h = tip.get_height() + 12
+            pygame.draw.rect(screen, (0, 0, 0), (tx, ty, w, h), border_radius=8)
+            pygame.draw.rect(screen, (90, 90, 90), (tx, ty, w, h), 1, border_radius=8)
+            screen.blit(tip, (tx + 7, ty + 6))
 
         # Sažetak sezone
         summary_y = 118
@@ -309,6 +422,17 @@ def main() -> None:
             y += line_h
 
 
+        if show_stats:
+            agent_rows, strategija_rows = ui_stats.build_stats(agenti, agent_stats, sezona)
+            pair_rows = ui_stats.build_pair_stats(pair_stats)
+            learning_rows = ui_stats.build_learning_stats(agenti, learning_agent)
+            rank_rows = ui_stats.build_rank_stats(rank_stats)
+            ui_stats.draw_stats_overlay(
+                screen, W, H, font_title, font_small, font_mono,
+                BOJA_TEKST, BOJA_SUBT, agent_rows, strategija_rows,
+                pair_rows, learning_rows, rank_rows, stats_tab
+            )
+
         pygame.display.flip()
 
     # Main loop
@@ -335,7 +459,7 @@ def main() -> None:
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                     brzina = max(0.5, brzina - 0.5)
                 elif event.key == pygame.K_r:
-                    agenti, sim, sezona, kuce, zadnji_ishodi, log, total_suradnje, total_poteza, last_season_pct = reset()
+                    agenti, sim, sezona, kuce, zadnji_ishodi, log, total_suradnje, total_poteza, last_season_pct, agent_stats, global_pct_by_season, learning_pct_by_season, learning_agent, pair_stats, rank_stats = reset()
                     pozicije = pozicioniraj_kuce(
                         kuce,
                         cx=mapa_rect.centerx,
@@ -346,6 +470,24 @@ def main() -> None:
                     os.makedirs("screenshots", exist_ok=True)
                     filename = os.path.join("screenshots", f"mapa_sezona_{sezona}.png")
                     pygame.image.save(screen, filename)
+                elif event.key == pygame.K_t:
+                    show_stats = not show_stats
+                elif event.key in (pygame.K_LEFT, pygame.K_RIGHT) and show_stats:
+                    if event.key == pygame.K_LEFT:
+                        stats_tab = (stats_tab - 1) % 5
+                    else:
+                        stats_tab = (stats_tab + 1) % 5
+                elif event.key == pygame.K_e:
+                    ui_stats.export_stats(
+                        agenti,
+                        agent_stats,
+                        sezona,
+                        global_pct_by_season,
+                        learning_pct_by_season,
+                        learning_agent,
+                        pair_stats,
+                        rank_stats,
+                    )
 
         if not pauza:
             akumulirano += dt
