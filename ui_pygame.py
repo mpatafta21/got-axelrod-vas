@@ -91,7 +91,13 @@ def boja_veze(potez_a: Potez, potez_b: Potez) -> Tuple[int, int, int]:
     return BOJA_IZDAJA
 
 
-def nacrtaj_strelicu(screen, from_pos: Tuple[int, int], to_pos: Tuple[int, int], color: Tuple[int, int, int]) -> None:
+def nacrtaj_strelicu(
+    screen,
+    from_pos: Tuple[int, int],
+    to_pos: Tuple[int, int],
+    color: Tuple[int, int, int],
+    target_radius: int,
+) -> None:
     dx = to_pos[0] - from_pos[0]
     dy = to_pos[1] - from_pos[1]
     length = math.hypot(dx, dy)
@@ -100,8 +106,8 @@ def nacrtaj_strelicu(screen, from_pos: Tuple[int, int], to_pos: Tuple[int, int],
     ux = dx / length
     uy = dy / length
 
-    end_x = to_pos[0] - ux * (RADIUS_CVOR + 1)
-    end_y = to_pos[1] - uy * (RADIUS_CVOR + 1)
+    end_x = to_pos[0] - ux * (target_radius + 1)
+    end_y = to_pos[1] - uy * (target_radius + 1)
     arrow_len = 10
     arrow_w = 5
     base_x = end_x - ux * arrow_len
@@ -120,6 +126,24 @@ def nacrtaj_strelicu(screen, from_pos: Tuple[int, int], to_pos: Tuple[int, int],
     oright = (obase_x - perp_x * outline_w, obase_y - perp_y * outline_w)
     pygame.draw.polygon(screen, BOJA_IZDAJA, [oleft, oright, tip])
     pygame.draw.polygon(screen, (0, 0, 0), [left, right, tip])
+
+
+def napravi_kruzni_grb(slika: pygame.Surface, size: int) -> pygame.Surface:
+    scaled = pygame.transform.smoothscale(slika, (size, size))
+    mask = pygame.Surface((size, size), pygame.SRCALPHA)
+    pygame.draw.circle(mask, (255, 255, 255, 255), (size // 2, size // 2), size // 2)
+    scaled.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+    return scaled
+
+
+def ucitaj_grbove(kuce: List[str]) -> Dict[str, pygame.Surface]:
+    grbovi = {}
+    for k in kuce:
+        path = os.path.join("assets", f"House_{k}.png")
+        if not os.path.exists(path):
+            continue
+        grbovi[k] = pygame.image.load(path).convert_alpha()
+    return grbovi
 
 
 def udaljenost_tocke_od_duzine(px: int, py: int, x1: int, y1: int, x2: int, y2: int) -> float:
@@ -219,6 +243,7 @@ def main() -> None:
         cy=mapa_rect.centery,
         radius=min(mapa_rect.width, mapa_rect.height) // 3
     )
+    grbovi = ucitaj_grbove(kuce)
 
     pauza = True
     brzina = 1.0  # sezona u sekundi
@@ -296,6 +321,17 @@ def main() -> None:
             screen.blit(txt, (legend_x + 20, text_y))
 
         mx, my = pygame.mouse.get_pos()
+        base_r = RADIUS_CVOR
+        max_extra = 20
+        poredak = sorted(agenti, key=lambda x: x.bodovi, reverse=True)
+        radius_map = {}
+        n = len(poredak)
+        for idx, a in enumerate(poredak):
+            if n > 1:
+                scale = (n - 1 - idx) / (n - 1)
+            else:
+                scale = 0.0
+            radius_map[a.naziv] = int(base_r + max_extra * scale)
 
         # Veze (mapa)
         # crtaj sve parove za koje imamo zadnji ishod
@@ -328,7 +364,13 @@ def main() -> None:
                 else:
                     izdajnik = d.b
                     zrtva = d.a
-                nacrtaj_strelicu(screen, pozicije[izdajnik], pozicije[zrtva], BOJA_IZDAJA)
+                nacrtaj_strelicu(
+                    screen,
+                    pozicije[izdajnik],
+                    pozicije[zrtva],
+                    BOJA_IZDAJA,
+                    radius_map.get(zrtva, RADIUS_CVOR),
+                )
 
             dist = udaljenost_tocke_od_duzine(mx, my, x1, y1, x2, y2)
             if dist < 6 and dist < hovered_edge_dist:
@@ -346,25 +388,32 @@ def main() -> None:
         hovered = None
         for a in agenti:
             x, y = pozicije[a.naziv]
+            r = radius_map.get(a.naziv, RADIUS_CVOR)
             dist = (mx - x) ** 2 + (my - y) ** 2
-            if dist <= (RADIUS_CVOR + 6) ** 2:
+            if dist <= (r + 6) ** 2:
                 hovered = a.naziv
 
         for a in agenti:
             x, y = pozicije[a.naziv]
+            r = radius_map.get(a.naziv, RADIUS_CVOR)
             col = BOJA_CVOR_AKT if a.naziv == hovered else BOJA_CVOR
-            pygame.draw.circle(screen, col, (x, y), RADIUS_CVOR)
+            pygame.draw.circle(screen, col, (x, y), r)
+            icon = grbovi.get(a.naziv)
+            if icon:
+                size = max(8, r * 2 - 6)
+                icon_c = napravi_kruzni_grb(icon, size)
+                screen.blit(icon_c, (x - icon_c.get_width() // 2, y - icon_c.get_height() // 2))
             outline_col = BOJA_CVOR_UCENJE if a.je_ucenje else (10, 10, 10)
             outline_w = 3 if a.je_ucenje else 2
-            pygame.draw.circle(screen, outline_col, (x, y), RADIUS_CVOR, outline_w)
+            pygame.draw.circle(screen, outline_col, (x, y), r, outline_w)
 
             if a.je_ucenje:
                 t = pygame.time.get_ticks() / 1000.0
                 pulse = int(4 * (0.5 + 0.5 * math.sin(t * 4.0)))
-                pygame.draw.circle(screen, BOJA_CVOR_UCENJE, (x, y), RADIUS_CVOR + 6 + pulse, 2)
+                pygame.draw.circle(screen, BOJA_CVOR_UCENJE, (x, y), r + 6 + pulse, 2)
 
             label = font_small.render(a.naziv, True, BOJA_TEKST)
-            screen.blit(label, (x - label.get_width() // 2, y + RADIUS_CVOR + 6))
+            screen.blit(label, (x - label.get_width() // 2, y + r + 6))
 
         # Tooltip
         if hovered:
@@ -466,6 +515,7 @@ def main() -> None:
                         cy=mapa_rect.centery,
                         radius=min(mapa_rect.width, mapa_rect.height) // 3
                     )
+                    grbovi = ucitaj_grbove(kuce)
                 elif event.key == pygame.K_s:
                     os.makedirs("screenshots", exist_ok=True)
                     filename = os.path.join("screenshots", f"mapa_sezona_{sezona}.png")
