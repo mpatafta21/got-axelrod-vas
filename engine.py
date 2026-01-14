@@ -3,6 +3,21 @@ from agent import KucaAgent
 
 Potez = str  # "S" ili "I"
 
+DEFAULT_MATRICA_ISPLATE = {
+    ("S", "S"): (3, 3),
+    ("I", "S"): (5, 0),
+    ("S", "I"): (0, 5),
+    ("I", "I"): (1, 1),
+}
+
+
+def izracunaj_isplatu(
+    matrica_isplate: Dict[Tuple[Potez, Potez], Tuple[int, int]],
+    potez_a: Potez,
+    potez_b: Potez,
+) -> Tuple[int, int]:
+    return matrica_isplate[(potez_a, potez_b)]
+
 class Simulacija:
     def __init__(self, matrica_isplate: Dict[Tuple[Potez, Potez], Tuple[int, int]]):
         self.matrica_isplate = matrica_isplate
@@ -78,4 +93,3 @@ class Simulacija:
 
                 dogadjaji.append((a.naziv, b.naziv, potez_a, potez_b, bodovi_a, bodovi_b))
         return dogadjaji
-

@@ -4,6 +4,8 @@ import os
 import ui_stats
 import sys
 import time
+import threading
+from queue import Queue, Empty
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
@@ -12,6 +14,7 @@ import pygame
 from agent import KucaAgent
 from engine import Simulacija
 import strategije as st
+from spade_orchestrator import SpadeSession
 
 Potez = str  # "S" ili "I"
 
@@ -37,6 +40,7 @@ BOJA_CVOR_AKT = (255, 210, 90)
 BOJA_CVOR_UCENJE = (240, 200, 80)
 
 RADIUS_CVOR = 18
+USE_SPADE = True
 
 
 @dataclass
@@ -160,14 +164,14 @@ def udaljenost_tocke_od_duzine(px: int, py: int, x1: int, y1: int, x2: int, y2: 
 
 def tekst_dogadjaja(d: Dogadjaj) -> str:
     if d.potez_a == "S" and d.potez_b == "S":
-        return f"Savez: {d.a} ↔ {d.b}  (+{d.bod_a}/+{d.bod_b})"
+        return f"Savez: {d.a} <-> {d.b}  (+{d.bod_a}/+{d.bod_b})"
     if d.potez_a == "I" and d.potez_b == "I":
-        return f"Sukob: {d.a} ⚔ {d.b}  (+{d.bod_a}/+{d.bod_b})"
+        return f"Sukob: {d.a} x {d.b}  (+{d.bod_a}/+{d.bod_b})"
     # izdaja
     if d.potez_a == "I" and d.potez_b == "S":
-        return f"Izdaja: {d.a} izdao {d.b}  (+{d.bod_a}/+{d.bod_b})"
+        return f"Izdaja: {d.a} -> {d.b}  (+{d.bod_a}/+{d.bod_b})"
     if d.potez_a == "S" and d.potez_b == "I":
-        return f"Izdaja: {d.b} izdao {d.a}  (+{d.bod_a}/+{d.bod_b})"
+        return f"Izdaja: {d.b} -> {d.a}  (+{d.bod_a}/+{d.bod_b})"
     return f"{d.a} vs {d.b}: {d.potez_a}/{d.potez_b}"
 
 
@@ -175,7 +179,7 @@ def main() -> None:
     pygame.init()
     pygame.display.set_caption("GoT Axelrod VAS — Mapa")
 
-    W, H = 1200, 700
+    W, H = 1400, 700
     screen = pygame.display.set_mode((W, H))
     clock = pygame.time.Clock()
 
@@ -185,12 +189,12 @@ def main() -> None:
     font_mono = pygame.font.SysFont("Consolas", 16)
 
     # Layout
-    panel_w = 360
+    panel_w = 420
     mapa_rect = pygame.Rect(0, 0, W - panel_w, H)
     panel_rect = pygame.Rect(W - panel_w, 0, panel_w, H)
 
     # Stanje simulacije
-    def reset() -> Tuple[List[KucaAgent], Simulacija, int, List[str], Dict[Tuple[str, str], Dogadjaj], List[str], int, int, float, Dict[str, Dict[str, int]], List[float], List[float], str, Dict[Tuple[str, str], Dict[str, int]], Dict[str, Dict[str, int]]]:
+    def reset() -> Tuple[List[KucaAgent], Simulacija, int, List[str], Dict[Tuple[str, str], Dogadjaj], List[str], int, int, float, Dict[str, Dict[str, int]], List[float], List[float], str, Dict[Tuple[str, str], Dict[str, int]], Dict[str, Dict[str, int]], SpadeSession | None, Queue, dict]:
         agenti_local = kreiraj_agente()
         sim_local = Simulacija(MATRICA_ISPLATE)
         sezona_local = 0
@@ -201,6 +205,12 @@ def main() -> None:
         total_poteza = 0
         last_season_pct = 0.0
         agent_stats, global_pct_by_season, learning_pct_by_season, learning_agent, pair_stats, rank_stats = ui_stats.init_stats(agenti_local)
+        spade_session = None
+        spade_result_q: Queue = Queue()
+        spade_state = {"in_flight": False, "last_error": None, "last_ok": None}
+        if USE_SPADE:
+            spade_session = SpadeSession(auto_register=True)
+            spade_session.start()
         return (
             agenti_local,
             sim_local,
@@ -217,6 +227,9 @@ def main() -> None:
             learning_agent,
             pair_stats,
             rank_stats,
+            spade_session,
+            spade_result_q,
+            spade_state,
         )
 
     (
@@ -235,6 +248,9 @@ def main() -> None:
         learning_agent,
         pair_stats,
         rank_stats,
+        spade_session,
+        spade_result_q,
+        spade_state,
     ) = reset()
 
     pozicije = pozicioniraj_kuce(
@@ -254,12 +270,13 @@ def main() -> None:
     # za "blink" efekat aktivnog događaja u sezoni
     aktivne_veze: List[Tuple[str, str]] = []
 
-    def odigraj_jednu_sezonu():
+    def _primijeni_sezonu(dog):
         nonlocal sezona, aktivne_veze, total_suradnje, total_poteza, last_season_pct
         nonlocal agent_stats, global_pct_by_season, learning_pct_by_season, learning_agent, pair_stats, rank_stats
+
         sezona += 1
         aktivne_veze = []
-        dog = sim.odigraj_sezonu_sa_dogadjajima(agenti)
+
         # uzmi zadnje ishode po paru (za crtanje veza)
         for (a, b, pa, pb, ba, bb) in dog:
             key = tuple(sorted((a, b)))
@@ -286,6 +303,47 @@ def main() -> None:
         for d in (izdaje[:4] + dogadjaji[:3]):
             log.insert(0, f"[S{sezona}] {tekst_dogadjaja(d)}")
         del log[60:]  # ograniči log
+
+    def odigraj_jednu_sezonu():
+        dog = sim.odigraj_sezonu_sa_dogadjajima(agenti)
+        _primijeni_sezonu(dog)
+
+    def _start_spade_sezonu():
+        nonlocal spade_state
+        if spade_state["in_flight"] or not spade_session:
+            return
+        spade_state["in_flight"] = True
+        spade_state["last_error"] = None
+
+        def _worker():
+            try:
+                rezultat = spade_session.play_season_sync()
+                spade_result_q.put(("ok", rezultat))
+            except Exception as exc:
+                spade_result_q.put(("err", exc))
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    def _poll_spade_rezultat():
+        nonlocal spade_state
+        try:
+            status, payload = spade_result_q.get_nowait()
+        except Empty:
+            return False
+        spade_state["in_flight"] = False
+        if status == "ok":
+            spade_state["last_ok"] = time.time()
+            dog = payload["dogadjaji"]
+            bodovi = payload["bodovi"]
+            for a in agenti:
+                a.bodovi += bodovi.get(a.naziv, 0)
+            _primijeni_sezonu(dog)
+        else:
+            spade_state["last_error"] = str(payload)
+            log.insert(0, f"[S{sezona}] SPADE greška: {payload}")
+            del log[60:]
+        return True
 
     def nacrtaj():
         screen.fill(BOJA_POZADINA)
@@ -447,8 +505,26 @@ def main() -> None:
         screen.blit(sum1, (panel_rect.x + 16, summary_y))
         screen.blit(sum2, (panel_rect.x + 16, summary_y + 20))
 
+        if USE_SPADE:
+            status_y = summary_y + 40
+            if spade_state["in_flight"]:
+                status_text = "SPADE: sezona u tijeku..."
+                status_col = BOJA_SUBT
+            elif spade_state["last_error"]:
+                status_text = "SPADE: greška (vidi log)"
+                status_col = BOJA_IZDAJA
+            elif spade_state["last_ok"]:
+                status_text = "SPADE: OK"
+                status_col = BOJA_SS
+            else:
+                status_text = "SPADE: spremno"
+                status_col = BOJA_SUBT
+            screen.blit(font_small.render(status_text, True, status_col), (panel_rect.x + 16, status_y + 8))
+
         # Leaderboard
         y0 = 170
+        if USE_SPADE:
+            y0 += 18
         screen.blit(font.render("Leaderboard", True, BOJA_TEKST), (panel_rect.x + 16, y0))
         poredak = sorted(agenti, key=lambda x: x.bodovi, reverse=True)
         y = y0 + 28
@@ -492,23 +568,32 @@ def main() -> None:
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                if spade_session:
+                    spade_session.stop()
                 pygame.quit()
                 sys.exit(0)
 
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
+                    if spade_session:
+                        spade_session.stop()
                     pygame.quit()
                     sys.exit(0)
                 elif event.key == pygame.K_SPACE:
                     pauza = not pauza
                 elif event.key == pygame.K_n:
-                    odigraj_jednu_sezonu()
+                    if USE_SPADE:
+                        _start_spade_sezonu()
+                    else:
+                        odigraj_jednu_sezonu()
                 elif event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
                     brzina = min(20.0, brzina + 0.5)
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                     brzina = max(0.5, brzina - 0.5)
                 elif event.key == pygame.K_r:
-                    agenti, sim, sezona, kuce, zadnji_ishodi, log, total_suradnje, total_poteza, last_season_pct, agent_stats, global_pct_by_season, learning_pct_by_season, learning_agent, pair_stats, rank_stats = reset()
+                    if spade_session:
+                        spade_session.stop()
+                    agenti, sim, sezona, kuce, zadnji_ishodi, log, total_suradnje, total_poteza, last_season_pct, agent_stats, global_pct_by_season, learning_pct_by_season, learning_agent, pair_stats, rank_stats, spade_session, spade_result_q, spade_state = reset()
                     pozicije = pozicioniraj_kuce(
                         kuce,
                         cx=mapa_rect.centerx,
@@ -544,7 +629,13 @@ def main() -> None:
             period = 1.0 / brzina
             if akumulirano >= period:
                 akumulirano = 0.0
-                odigraj_jednu_sezonu()
+                if USE_SPADE:
+                    _start_spade_sezonu()
+                else:
+                    odigraj_jednu_sezonu()
+
+        if USE_SPADE:
+            _poll_spade_rezultat()
 
         nacrtaj()
         clock.tick(60)
