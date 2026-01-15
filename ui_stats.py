@@ -13,13 +13,14 @@ def init_stats(agenti):
     agent_stats = {a.naziv: {"suradnje": 0, "izdaje": 0, "poteza": 0} for a in agenti}
     global_pct_by_season: List[float] = []
     learning_pct_by_season: List[float] = []
+    learning_rank_by_season: List[int] = []
     learning_agent = next((a.naziv for a in agenti if a.je_ucenje), "")
     pair_stats: Dict[Tuple[str, str], Dict[str, int]] = {}
     rank_stats = {
         "top3": {a.naziv: 0 for a in agenti},
         "last": {a.naziv: 0 for a in agenti},
     }
-    return agent_stats, global_pct_by_season, learning_pct_by_season, learning_agent, pair_stats, rank_stats
+    return agent_stats, global_pct_by_season, learning_pct_by_season, learning_rank_by_season, learning_agent, pair_stats, rank_stats
 
 
 def update_stats_for_season(
@@ -27,6 +28,7 @@ def update_stats_for_season(
     agent_stats,
     global_pct_by_season,
     learning_pct_by_season,
+    learning_rank_by_season,
     learning_agent,
     pair_stats,
     rank_stats,
@@ -78,6 +80,11 @@ def update_stats_for_season(
         rank_stats["top3"][a.naziv] += 1
     if poredak:
         rank_stats["last"][poredak[-1].naziv] += 1
+    if learning_agent:
+        for idx, a in enumerate(poredak, start=1):
+            if a.naziv == learning_agent:
+                learning_rank_by_season.append(idx)
+                break
 
     last_season_pct = 100.0 * season_suradnje / season_poteza if season_poteza > 0 else 0.0
     global_pct_by_season.append(last_season_pct)
@@ -165,8 +172,8 @@ def build_learning_stats(agenti, learning_agent):
     if agent is None:
         return []
     rows = []
-    protivnici = [a.naziv for a in agenti if a.naziv != learning_agent]
-    for p in sorted(protivnici):
+    protivnici = [(a.naziv, a.naziv_strategije) for a in agenti if a.naziv != learning_agent]
+    for p, strategija_naziv in sorted(protivnici):
         stat = agent.statistika_ucenja.get(p, {})
         s = stat.get("S", {"n": 0.0, "avg": 0.0})
         i = stat.get("I", {"n": 0.0, "avg": 0.0})
@@ -182,12 +189,21 @@ def build_learning_stats(agenti, learning_agent):
             pref = "S"
         else:
             pref = "S" if avg_s >= avg_i else "I"
+        pref_s = stat.get("pref_after_s", "-")
+        pref_i = stat.get("pref_after_i", "-")
+        pct_s = stat.get("pct_s_after_s", 0.0)
+        pct_i = stat.get("pct_i_after_i", 0.0)
         rows.append({
             "protivnik": p,
+            "strategija": strategija_naziv,
             "avg_s": avg_s,
             "avg_i": avg_i,
             "n": n_s + n_i,
             "pref": pref,
+            "pref_s": pref_s,
+            "pref_i": pref_i,
+            "pct_s": pct_s,
+            "pct_i": pct_i,
         })
     return rows
 
@@ -209,6 +225,7 @@ def export_stats(
     sezona,
     global_pct_by_season,
     learning_pct_by_season,
+    learning_rank_by_season,
     learning_agent,
     pair_stats,
     rank_stats,
@@ -252,6 +269,13 @@ def export_stats(
             l = learning_pct_by_season[i - 1] if i - 1 < len(learning_pct_by_season) else 0.0
             w.writerow([i, f"{g:.2f}", f"{l:.2f}"])
 
+    if learning_agent:
+        with open(os.path.join("ui_data", "targaryen_pozicija_po_sezoni.csv"), "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["sezona", "pozicija"])
+            for i, r in enumerate(learning_rank_by_season, start=1):
+                w.writerow([i, r])
+
     with open(os.path.join("ui_data", "mrezna_statistika.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["par", "ss", "si", "ii", "ukupno", "stabilnost"])
@@ -260,9 +284,9 @@ def export_stats(
 
     with open(os.path.join("ui_data", "learning_agent.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["protivnik", "avg_S", "avg_I", "pokusaji", "preferirani_potez"])
+        w.writerow(["protivnik", "strategija", "avg_S", "avg_I", "pokusaji", "preferirani_potez", "pref_after_S", "pref_after_I", "pct_S_after_S", "pct_I_after_I"])
         for r in learning_rows:
-            w.writerow([r["protivnik"], f"{r['avg_s']:.2f}", f"{r['avg_i']:.2f}", r["n"], r["pref"]])
+            w.writerow([r["protivnik"], r["strategija"], f"{r['avg_s']:.2f}", f"{r['avg_i']:.2f}", r["n"], r["pref"], r["pref_s"], r["pref_i"], f"{r['pct_s']:.1f}", f"{r['pct_i']:.1f}"])
 
     with open(os.path.join("ui_data", "stabilnost_poretka.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -286,6 +310,18 @@ def export_stats(
     plt.tight_layout()
     plt.savefig(os.path.join("ui_data", "suradnja_po_sezoni.png"))
     plt.close()
+
+    if learning_agent and learning_rank_by_season:
+        plt.figure(figsize=(8, 4))
+        plt.plot(sez, learning_rank_by_season, label=f"{learning_agent} pozicija")
+        plt.xlabel("Sezona")
+        plt.ylabel("Pozicija (1=prvi)")
+        plt.title("Pozicija learning agenta po sezoni")
+        plt.gca().invert_yaxis()
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join("ui_data", "targaryen_pozicija_po_sezoni.png"))
+        plt.close()
 
 
 def draw_stats_overlay(
@@ -360,11 +396,12 @@ def draw_stats_overlay(
     elif tab_index == 3:
         lines.append("LEARNING AGENT (Targaryen)")
         lines.append("")
-        header_learn = "Protivnik        Avg S   Avg I  Pokusaji  Pref"
+        header_learn = "Protivnik        Strategija        Avg S   Avg I  Pokusaji  Pref  PrefS PrefI  %S_S  %I_I"
         lines.append(header_learn)
         lines.append("-" * len(header_learn))
         for r in learning_rows:
-            lines.append(f"{r['protivnik']:<14} {r['avg_s']:>6.2f} {r['avg_i']:>7.2f} {r['n']:>9} {r['pref']:>5}")
+            strat = r["strategija"][:16]
+            lines.append(f"{r['protivnik']:<14} {strat:<16} {r['avg_s']:>6.2f} {r['avg_i']:>7.2f} {r['n']:>9} {r['pref']:>5} {r['pref_s']:>5} {r['pref_i']:>5} {r['pct_s']:>5.0f}% {r['pct_i']:>5.0f}%")
     else:
         lines.append("STABILNOST PORETKA")
         lines.append("")

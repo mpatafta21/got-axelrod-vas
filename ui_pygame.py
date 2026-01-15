@@ -5,8 +5,9 @@ import ui_stats
 import sys
 import time
 import threading
+from copy import deepcopy
 from queue import Queue, Empty
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Tuple
 
 import pygame
@@ -14,7 +15,7 @@ import pygame
 from agent import KucaAgent
 from engine import Simulacija
 import strategije as st
-from spade_orchestrator import SpadeSession
+from spade_orchestrator import SpadeSession, KUCe as SPADE_KUCE
 
 Potez = str  # "S" ili "I"
 
@@ -41,6 +42,148 @@ BOJA_CVOR_UCENJE = (240, 200, 80)
 
 RADIUS_CVOR = 18
 USE_SPADE = True
+ERA_LEN = 10
+
+HOUSE_DEFS = [
+    {"naziv": "Stark", "strategija_id": "tit_for_tat", "strategija_naziv": "TFT", "fn": st.tit_for_tat},
+    {"naziv": "Arryn", "strategija_id": "tit_for_tat", "strategija_naziv": "TFT", "fn": st.tit_for_tat},
+    {"naziv": "Tully", "strategija_id": "tit_for_two_tats", "strategija_naziv": "TFT-2T", "fn": st.tit_for_two_tats},
+    {"naziv": "Mormont", "strategija_id": "uvijek_suradjuj", "strategija_naziv": "Uvijek surađuj", "fn": st.uvijek_suradjuj},
+    {"naziv": "Tyrell", "strategija_id": "win_stay_lose_shift", "strategija_naziv": "WSLS (Pavlov)", "fn": st.win_stay_lose_shift},
+    {"naziv": "Martell", "strategija_id": "slucajna_0_60", "strategija_naziv": "Slučajno (60% S)", "fn": lambda moja, protiv: st.slucajna_strategija(moja, protiv, 0.60)},
+    {"naziv": "Greyjoy", "strategija_id": "sumnjivi_tit_for_tat", "strategija_naziv": "Sumnjivi TFT", "fn": st.sumnjivi_tit_for_tat},
+    {"naziv": "Frey", "strategija_id": "joss", "strategija_naziv": "JOSS (10% I)", "fn": lambda moja, protiv: st.joss(moja, protiv, p_izdaje_nakon_suradnje=0.10)},
+    {"naziv": "Lannister", "strategija_id": "always_defect", "strategija_naziv": "Uvijek izdaja", "fn": st.uvijek_izdaj},
+    {"naziv": "Bolton", "strategija_id": "always_defect", "strategija_naziv": "Uvijek izdaja", "fn": st.uvijek_izdaj},
+    {"naziv": "Baratheon", "strategija_id": "grim_trigger", "strategija_naziv": "Grim Trigger", "fn": st.grim_trigger},
+    {"naziv": "Targaryen", "strategija_id": "learning_tft", "strategija_naziv": "Učenje (ε=0.10)", "fn": st.tit_for_tat, "je_ucenje": True, "epsilon": 0.10},
+]
+
+STRATEGIJA_LABELS = {
+    "tit_for_tat": "TFT",
+    "tit_for_two_tats": "TFT-2T",
+    "uvijek_suradjuj": "Uvijek surađuj",
+    "win_stay_lose_shift": "WSLS",
+    "slucajna_0_60": "Slučajno (60% S)",
+    "sumnjivi_tit_for_tat": "Sumnjivi TFT",
+    "joss": "JOSS (10% I)",
+    "always_defect": "Uvijek izdaja",
+    "grim_trigger": "Grim Trigger",
+    "learning_tft": "Učenje (ε=0.10)",
+}
+
+STRATEGIJA_ORDER = [
+    "tit_for_tat",
+    "tit_for_two_tats",
+    "uvijek_suradjuj",
+    "win_stay_lose_shift",
+    "sumnjivi_tit_for_tat",
+    "always_defect",
+    "grim_trigger",
+    "slucajna_0_60",
+    "joss",
+    "learning_tft",
+]
+
+PARAM_META = {
+    "slucajna_0_60": [
+        {"key": "param", "label": "p", "min": 0.0, "max": 1.0, "step": 0.05, "fmt": "{:.0f}%"},
+    ],
+    "joss": [
+        {"key": "param", "label": "pI", "min": 0.0, "max": 1.0, "step": 0.05, "fmt": "{:.0f}%"},
+    ],
+    "learning_tft": [
+        {"key": "epsilon", "label": "istraživanje (ε)", "min": 0.0, "max": 1.0, "step": 0.05, "fmt": "{:.2f}"},
+        {"key": "alpha", "label": "učenje (α)", "min": 0.0, "max": 1.0, "step": 0.05, "fmt": "{:.2f}"},
+        {"key": "gamma", "label": "nagrada (γ)", "min": 0.0, "max": 1.0, "step": 0.05, "fmt": "{:.2f}"},
+    ],
+}
+
+
+def _build_default_settings():
+    counts = {}
+    for d in HOUSE_DEFS:
+        counts[d["strategija_id"]] = counts.get(d["strategija_id"], 0) + 1
+    settings = {}
+    for sid in STRATEGIJA_ORDER:
+        cfg = {"enabled": True, "count": counts.get(sid, 0)}
+        if sid == "slucajna_0_60":
+            cfg["param"] = 0.60
+        if sid == "joss":
+            cfg["param"] = 0.10
+        if sid == "learning_tft":
+            cfg["epsilon"] = 0.10
+            cfg["alpha"] = 0.20
+            cfg["gamma"] = 0.90
+        settings[sid] = cfg
+    return settings
+
+
+STRATEGIJA_MAX = {sid: cfg["count"] for sid, cfg in _build_default_settings().items()}
+
+
+def _build_agents_from_settings(settings):
+    agenti = []
+    by_sid = {}
+    for d in HOUSE_DEFS:
+        by_sid.setdefault(d["strategija_id"], []).append(d)
+    for sid in STRATEGIJA_ORDER:
+        cfg = settings.get(sid, {"enabled": False, "count": 0})
+        if not cfg["enabled"] or cfg["count"] <= 0:
+            continue
+        pool = by_sid.get(sid, [])
+        for d in pool[: cfg["count"]]:
+            fn = d["fn"]
+            if sid == "slucajna_0_60":
+                p = cfg.get("param", 0.60)
+                fn = lambda moja, protiv, p=p: st.slucajna_strategija(moja, protiv, p)
+                strategija_naziv = f"Slučajno ({int(round(p * 100))}% S)"
+            if sid == "joss":
+                p = cfg.get("param", 0.10)
+                fn = lambda moja, protiv, p=p: st.joss(moja, protiv, p_izdaje_nakon_suradnje=p)
+                strategija_naziv = f"JOSS ({int(round(p * 100))}% I)"
+            if sid == "learning_tft":
+                p = cfg.get("epsilon", d.get("epsilon", 0.10))
+                strategija_naziv = f"Učenje (ε={p:.2f})"
+            if sid not in ("slucajna_0_60", "joss", "learning_tft"):
+                strategija_naziv = d["strategija_naziv"]
+            agenti.append(
+                KucaAgent(
+                    d["naziv"],
+                    strategija_naziv,
+                    fn,
+                    je_ucenje=d.get("je_ucenje", False),
+                    epsilon=cfg.get("epsilon", d.get("epsilon", 0.10)),
+                )
+            )
+    return agenti
+
+
+def _build_spade_kuca_defs(settings):
+    by_sid = {}
+    for d in SPADE_KUCE:
+        by_sid.setdefault(d["config"].strategija_id, []).append(d)
+    kuca_defs = []
+    for sid in STRATEGIJA_ORDER:
+        cfg = settings.get(sid, {"enabled": False, "count": 0})
+        if not cfg["enabled"] or cfg["count"] <= 0:
+            continue
+        pool = by_sid.get(sid, [])
+        for d in pool[: cfg["count"]]:
+            conf = d["config"]
+            if sid == "slucajna_0_60":
+                conf = replace(conf, p_suradnje=cfg.get("param", 0.60))
+            elif sid == "joss":
+                conf = replace(conf, p_joss=cfg.get("param", 0.10))
+            elif sid == "learning_tft":
+                conf = replace(
+                    conf,
+                    epsilon=cfg.get("epsilon", 0.10),
+                    alpha=cfg.get("alpha", 0.20),
+                    gamma=cfg.get("gamma", 0.90),
+                )
+            kuca_defs.append({"jid": d["jid"], "password": d["password"], "config": conf})
+    return kuca_defs
 
 
 @dataclass
@@ -53,26 +196,10 @@ class Dogadjaj:
     bod_b: int
 
 
-def kreiraj_agente() -> List[KucaAgent]:
-    # 12 kuća
-    agenti = [
-        KucaAgent("Stark",      "TFT",                 st.tit_for_tat),
-        KucaAgent("Arryn",      "TFT",                 st.tit_for_tat),
-        KucaAgent("Tully",      "TFT-2T",              st.tit_for_two_tats),
-        KucaAgent("Mormont",    "Uvijek surađuj",      st.uvijek_suradjuj),
-
-        KucaAgent("Tyrell",     "WSLS (Pavlov)",       st.win_stay_lose_shift),
-        KucaAgent("Martell",    "Slučajno (60% S)",    lambda moja, protiv: st.slucajna_strategija(moja, protiv, 0.60)),
-        KucaAgent("Greyjoy",    "Sumnjivi TFT",        st.sumnjivi_tit_for_tat),
-        KucaAgent("Frey",       "JOSS (10% I)",        lambda moja, protiv: st.joss(moja, protiv, p_izdaje_nakon_suradnje=0.10)),
-
-        KucaAgent("Lannister",  "Uvijek izdaja",       st.uvijek_izdaj),
-        KucaAgent("Bolton",     "Uvijek izdaja",       st.uvijek_izdaj),
-        KucaAgent("Baratheon",  "Grim Trigger",        st.grim_trigger),
-
-        KucaAgent("Targaryen",  "Učenje (ε=0.10)",     st.tit_for_tat, je_ucenje=True, epsilon=0.10),
-    ]
-    return agenti
+def kreiraj_agente(settings=None) -> List[KucaAgent]:
+    if settings is None:
+        settings = _build_default_settings()
+    return _build_agents_from_settings(settings)
 
 
 def pozicioniraj_kuce(kuce: List[str], cx: int, cy: int, radius: int) -> Dict[str, Tuple[int, int]]:
@@ -179,7 +306,7 @@ def main() -> None:
     pygame.init()
     pygame.display.set_caption("GoT Axelrod VAS — Mapa")
 
-    W, H = 1400, 700
+    W, H = 1720, 700
     screen = pygame.display.set_mode((W, H))
     clock = pygame.time.Clock()
 
@@ -189,13 +316,15 @@ def main() -> None:
     font_mono = pygame.font.SysFont("Consolas", 16)
 
     # Layout
+    settings_w = 300
     panel_w = 420
-    mapa_rect = pygame.Rect(0, 0, W - panel_w, H)
+    mapa_rect = pygame.Rect(settings_w, 0, W - panel_w - settings_w, H)
     panel_rect = pygame.Rect(W - panel_w, 0, panel_w, H)
+    settings_rect = pygame.Rect(0, 0, settings_w, H)
 
     # Stanje simulacije
-    def reset() -> Tuple[List[KucaAgent], Simulacija, int, List[str], Dict[Tuple[str, str], Dogadjaj], List[str], int, int, float, Dict[str, Dict[str, int]], List[float], List[float], str, Dict[Tuple[str, str], Dict[str, int]], Dict[str, Dict[str, int]], SpadeSession | None, Queue, dict]:
-        agenti_local = kreiraj_agente()
+    def reset(settings_current, start_spade: bool = True) -> Tuple[List[KucaAgent], Simulacija, int, List[str], Dict[Tuple[str, str], Dogadjaj], List[str], int, int, float, Dict[str, Dict[str, int]], List[float], List[float], str, Dict[Tuple[str, str], Dict[str, int]], Dict[str, Dict[str, int]], SpadeSession | None, Queue, dict]:
+        agenti_local = kreiraj_agente(settings_current)
         sim_local = Simulacija(MATRICA_ISPLATE)
         sezona_local = 0
         kuce = [a.naziv for a in agenti_local]
@@ -204,12 +333,13 @@ def main() -> None:
         total_suradnje = 0
         total_poteza = 0
         last_season_pct = 0.0
-        agent_stats, global_pct_by_season, learning_pct_by_season, learning_agent, pair_stats, rank_stats = ui_stats.init_stats(agenti_local)
+        agent_stats, global_pct_by_season, learning_pct_by_season, learning_rank_by_season, learning_agent, pair_stats, rank_stats = ui_stats.init_stats(agenti_local)
         spade_session = None
         spade_result_q: Queue = Queue()
         spade_state = {"in_flight": False, "last_error": None, "last_ok": None}
-        if USE_SPADE:
-            spade_session = SpadeSession(auto_register=True)
+        if USE_SPADE and start_spade:
+            spade_defs = _build_spade_kuca_defs(settings_current)
+            spade_session = SpadeSession(auto_register=True, kuca_defs=spade_defs)
             spade_session.start()
         return (
             agenti_local,
@@ -224,6 +354,7 @@ def main() -> None:
             agent_stats,
             global_pct_by_season,
             learning_pct_by_season,
+            learning_rank_by_season,
             learning_agent,
             pair_stats,
             rank_stats,
@@ -231,6 +362,20 @@ def main() -> None:
             spade_result_q,
             spade_state,
         )
+
+    settings_current = _build_default_settings()
+    settings_draft = deepcopy(settings_current)
+    settings_pending = None
+    pending_message = ""
+    game_mode = None
+    screen_mode = "menu"
+    era_progress = 0
+    era_points: Dict[str, int] = {}
+    noise_rate = 0.0
+    noise_pending = None
+    got_noise_base = 0.0
+    got_bonus_8 = False
+    got_bonus_4 = False
 
     (
         agenti,
@@ -245,13 +390,14 @@ def main() -> None:
         agent_stats,
         global_pct_by_season,
         learning_pct_by_season,
+        learning_rank_by_season,
         learning_agent,
         pair_stats,
         rank_stats,
         spade_session,
         spade_result_q,
         spade_state,
-    ) = reset()
+    ) = reset(settings_current, start_spade=False)
 
     pozicije = pozicioniraj_kuce(
         kuce,
@@ -266,13 +412,136 @@ def main() -> None:
     akumulirano = 0.0
     show_stats = False
     stats_tab = 0
+    settings_controls = []
+    menu_buttons = []
 
     # za "blink" efekat aktivnog događaja u sezoni
     aktivne_veze: List[Tuple[str, str]] = []
 
+    def _apply_pending_if_ready() -> bool:
+        nonlocal settings_current, settings_draft, settings_pending, pending_message
+        nonlocal agenti, sim, sezona, kuce, zadnji_ishodi, log
+        nonlocal total_suradnje, total_poteza, last_season_pct
+        nonlocal agent_stats, global_pct_by_season, learning_pct_by_season, learning_rank_by_season, learning_agent
+        nonlocal pair_stats, rank_stats, spade_session, spade_result_q, spade_state, pozicije, grbovi
+        nonlocal noise_rate, noise_pending, got_noise_base, got_bonus_8, got_bonus_4
+
+        if not settings_pending or spade_state["in_flight"]:
+            return False
+
+        if spade_session:
+            spade_session.stop()
+
+        settings_current = settings_pending
+        settings_draft = deepcopy(settings_current)
+        settings_pending = None
+        pending_message = ""
+        if noise_pending is not None:
+            noise_rate = noise_pending
+            noise_pending = None
+            if game_mode == "got":
+                got_noise_base = noise_rate
+                got_bonus_8 = False
+                got_bonus_4 = False
+
+        (
+            agenti,
+            sim,
+            sezona,
+            kuce,
+            zadnji_ishodi,
+            log,
+            total_suradnje,
+            total_poteza,
+            last_season_pct,
+            agent_stats,
+            global_pct_by_season,
+            learning_pct_by_season,
+            learning_rank_by_season,
+            learning_agent,
+            pair_stats,
+            rank_stats,
+            spade_session,
+            spade_result_q,
+            spade_state,
+        ) = reset(settings_current)
+
+        pozicije = pozicioniraj_kuce(
+            kuce,
+            cx=mapa_rect.centerx,
+            cy=mapa_rect.centery,
+            radius=min(mapa_rect.width, mapa_rect.height) // 3
+        )
+        grbovi = ucitaj_grbove(kuce)
+        era_reset()
+        return True
+
+    def era_reset():
+        nonlocal era_progress, era_points
+        era_progress = 0
+        era_points = {a.naziv: 0 for a in agenti}
+
+    era_reset()
+
+    def _calc_season_points(dog):
+        points = {}
+        for a, b, _pa, _pb, ba, bb in dog:
+            points[a] = points.get(a, 0) + ba
+            points[b] = points.get(b, 0) + bb
+        return points
+
+    def _eliminate_if_needed(season_points):
+        nonlocal agenti, kuce, pozicije, grbovi
+        nonlocal era_progress, era_points, zadnji_ishodi
+        nonlocal noise_rate, noise_pending, got_noise_base, got_bonus_8, got_bonus_4
+        nonlocal agent_stats, rank_stats
+        if game_mode != "got":
+            return
+        if not season_points:
+            return
+        for k, v in season_points.items():
+            era_points[k] = era_points.get(k, 0) + v
+        era_progress += 1
+        if era_progress < ERA_LEN or len(agenti) <= 1:
+            return
+        elim_name = min(era_points.items(), key=lambda x: x[1])[0]
+        log.insert(0, f"[S{sezona}] Eliminacija: {elim_name}")
+        del log[60:]
+        agenti = [a for a in agenti if a.naziv != elim_name]
+        kuce = [a.naziv for a in agenti]
+        zadnji_ishodi = {
+            k: v for k, v in zadnji_ishodi.items()
+            if elim_name not in k
+        }
+        pozicije = pozicioniraj_kuce(
+            kuce,
+            cx=mapa_rect.centerx,
+            cy=mapa_rect.centery,
+            radius=min(mapa_rect.width, mapa_rect.height) // 3
+        )
+        grbovi = ucitaj_grbove(kuce)
+        if elim_name in agent_stats:
+            del agent_stats[elim_name]
+        rank_stats["top3"].pop(elim_name, None)
+        rank_stats["last"].pop(elim_name, None)
+        for a in agenti:
+            a.bodovi = 0
+        era_reset()
+        if game_mode == "got":
+            n = len(agenti)
+            if n <= 8 and not got_bonus_8:
+                got_bonus_8 = True
+                noise_rate = got_noise_base + 0.02
+            if n <= 4 and not got_bonus_4:
+                got_bonus_8 = True
+                got_bonus_4 = True
+                noise_rate = got_noise_base + 0.02 + 0.03
+            noise_rate = min(0.50, max(0.0, noise_rate))
+            noise_pending = None
+
     def _primijeni_sezonu(dog):
         nonlocal sezona, aktivne_veze, total_suradnje, total_poteza, last_season_pct
-        nonlocal agent_stats, global_pct_by_season, learning_pct_by_season, learning_agent, pair_stats, rank_stats
+        nonlocal agent_stats, global_pct_by_season, learning_pct_by_season, learning_rank_by_season, learning_agent, pair_stats, rank_stats
 
         sezona += 1
         aktivne_veze = []
@@ -288,6 +557,7 @@ def main() -> None:
             agent_stats,
             global_pct_by_season,
             learning_pct_by_season,
+            learning_rank_by_season,
             learning_agent,
             pair_stats,
             rank_stats,
@@ -303,13 +573,17 @@ def main() -> None:
         for d in (izdaje[:4] + dogadjaji[:3]):
             log.insert(0, f"[S{sezona}] {tekst_dogadjaja(d)}")
         del log[60:]  # ograniči log
+        season_points = _calc_season_points(dog)
+        _eliminate_if_needed(season_points)
 
     def odigraj_jednu_sezonu():
+        _apply_pending_if_ready()
         dog = sim.odigraj_sezonu_sa_dogadjajima(agenti)
         _primijeni_sezonu(dog)
 
     def _start_spade_sezonu():
         nonlocal spade_state
+        _apply_pending_if_ready()
         if spade_state["in_flight"] or not spade_session:
             return
         spade_state["in_flight"] = True
@@ -317,7 +591,8 @@ def main() -> None:
 
         def _worker():
             try:
-                rezultat = spade_session.play_season_sync()
+                aktivni = [a.naziv for a in agenti]
+                rezultat = spade_session.play_season_sync(active_names=aktivni, noise_rate=noise_rate)
                 spade_result_q.put(("ok", rezultat))
             except Exception as exc:
                 spade_result_q.put(("err", exc))
@@ -336,8 +611,11 @@ def main() -> None:
             spade_state["last_ok"] = time.time()
             dog = payload["dogadjaji"]
             bodovi = payload["bodovi"]
+            learning_stats = payload.get("learning_stats", {})
             for a in agenti:
                 a.bodovi += bodovi.get(a.naziv, 0)
+                if a.naziv in learning_stats:
+                    _merge_learning_stats(a.statistika_ucenja, learning_stats[a.naziv])
             _primijeni_sezonu(dog)
         else:
             spade_state["last_error"] = str(payload)
@@ -345,8 +623,157 @@ def main() -> None:
             del log[60:]
         return True
 
+
+    def _merge_learning_stats(target, incoming):
+        for protivnik, potezi in incoming.items():
+            if protivnik not in target:
+                target[protivnik] = {
+                    "S": {"n": 0.0, "avg": 0.0},
+                    "I": {"n": 0.0, "avg": 0.0},
+                }
+            for potez in ("S", "I"):
+                inc = potezi.get(potez, {"n": 0.0, "avg": 0.0})
+                tgt = target[protivnik][potez]
+                n_old = tgt.get("n", 0.0)
+                avg_old = tgt.get("avg", 0.0)
+                n_add = inc.get("n", 0.0)
+                avg_add = inc.get("avg", 0.0)
+                if n_add <= 0:
+                    continue
+                n_new = n_old + n_add
+                avg_new = avg_old + (avg_add - avg_old) * (n_add / n_new)
+                tgt["n"] = n_new
+                tgt["avg"] = avg_new
+            for pref_key in ("pref_after_s", "pref_after_i"):
+                if pref_key in potezi:
+                    target[protivnik][pref_key] = potezi[pref_key]
+            for pct_key in ("pct_s_after_s", "pct_i_after_i"):
+                if pct_key in potezi:
+                    target[protivnik][pct_key] = potezi[pct_key]
+
     def nacrtaj():
         screen.fill(BOJA_POZADINA)
+
+        if screen_mode == "menu":
+            title = font_title.render("Odaberi mod", True, BOJA_TEKST)
+            screen.blit(title, (mapa_rect.centerx - title.get_width() // 2, 120))
+            btn_w = 320
+            btn_h = 48
+            btn_x = mapa_rect.centerx - btn_w // 2
+            btn_y = 200
+            menu_buttons.clear()
+            sim_rect = pygame.Rect(btn_x, btn_y, btn_w, btn_h)
+            got_rect = pygame.Rect(btn_x, btn_y + 70, btn_w, btn_h)
+            pygame.draw.rect(screen, (50, 90, 140), sim_rect)
+            pygame.draw.rect(screen, (90, 120, 160), sim_rect, 1)
+            pygame.draw.rect(screen, (50, 90, 140), got_rect)
+            pygame.draw.rect(screen, (90, 120, 160), got_rect, 1)
+            sim_txt = font_small.render("Simulacija strategija", True, BOJA_TEKST)
+            got_txt = font_small.render("Game of Thrones", True, BOJA_TEKST)
+            screen.blit(sim_txt, (sim_rect.centerx - sim_txt.get_width() // 2, sim_rect.centery - sim_txt.get_height() // 2))
+            screen.blit(got_txt, (got_rect.centerx - got_txt.get_width() // 2, got_rect.centery - got_txt.get_height() // 2))
+            menu_buttons.append(("sim", sim_rect))
+            menu_buttons.append(("got", got_rect))
+            pygame.display.flip()
+            return
+
+        def nacrtaj_postavke():
+            nonlocal settings_controls, pending_message
+            settings_controls = []
+            pygame.draw.rect(screen, BOJA_PANEL, settings_rect)
+
+            screen.blit(font_title.render("Postavke", True, BOJA_TEKST), (settings_rect.x + 16, 14))
+            screen.blit(font_small.render("Globalne strategije", True, BOJA_SUBT), (settings_rect.x + 16, 42))
+
+            x = settings_rect.x + 16
+            y = settings_rect.y + 70
+            row_h = 22
+            sub_h = 16
+            sub_gap = 6
+            checkbox = 14
+            btn_w = 18
+
+            for sid in STRATEGIJA_ORDER:
+                cfg = settings_draft.get(sid, {"enabled": False, "count": 0})
+                label = STRATEGIJA_LABELS.get(sid, sid)
+                cb = pygame.Rect(x, y + 3, checkbox, checkbox)
+                pygame.draw.rect(screen, BOJA_SUBT, cb, 1)
+                if cfg["enabled"]:
+                    pygame.draw.rect(screen, BOJA_SS, cb.inflate(-4, -4))
+                settings_controls.append(("toggle", sid, cb))
+
+                label_surf = font_small.render(label, True, BOJA_TEKST)
+                screen.blit(label_surf, (x + checkbox + 8, y))
+
+                minus_rect = pygame.Rect(settings_rect.right - 78, y, btn_w, btn_w)
+                plus_rect = pygame.Rect(settings_rect.right - 52, y, btn_w, btn_w)
+                pygame.draw.rect(screen, BOJA_SUBT, minus_rect, 1)
+                pygame.draw.rect(screen, BOJA_SUBT, plus_rect, 1)
+                screen.blit(font_small.render("-", True, BOJA_TEKST), (minus_rect.x + 5, minus_rect.y - 1))
+                screen.blit(font_small.render("+", True, BOJA_TEKST), (plus_rect.x + 4, plus_rect.y - 1))
+
+                settings_controls.append(("dec", sid, minus_rect))
+                settings_controls.append(("inc", sid, plus_rect))
+
+                count_txt = font_small.render(str(cfg["count"]), True, BOJA_TEKST)
+                screen.blit(count_txt, (settings_rect.right - 28, y))
+
+                y += row_h
+                if sid in PARAM_META:
+                    for meta in PARAM_META[sid]:
+                        key = meta["key"]
+                        pval = cfg.get(key, meta["min"])
+                        ptxt = meta["fmt"].format(pval * 100.0) if meta["fmt"].endswith("%") else meta["fmt"].format(pval)
+                        line = f"{meta['label']}={ptxt}"
+                        line_surf = font_small.render(line, True, BOJA_SUBT)
+                        screen.blit(line_surf, (x + checkbox + 8, y))
+
+                        p_minus = pygame.Rect(settings_rect.right - 78, y, btn_w, btn_w)
+                        p_plus = pygame.Rect(settings_rect.right - 52, y, btn_w, btn_w)
+                        pygame.draw.rect(screen, BOJA_SUBT, p_minus, 1)
+                        pygame.draw.rect(screen, BOJA_SUBT, p_plus, 1)
+                        screen.blit(font_small.render("-", True, BOJA_TEKST), (p_minus.x + 5, p_minus.y - 1))
+                        screen.blit(font_small.render("+", True, BOJA_TEKST), (p_plus.x + 4, p_plus.y - 1))
+                        settings_controls.append(("dec_param", sid, key, p_minus))
+                        settings_controls.append(("inc_param", sid, key, p_plus))
+                        y += sub_h + sub_gap
+
+            y += 12
+            show_noise = noise_rate if noise_pending is None else noise_pending
+            noise_label = f"Pogreska: {int(round(show_noise * 100))}%"
+            screen.blit(font_small.render(noise_label, True, BOJA_TEKST), (x, y))
+            n_minus = pygame.Rect(settings_rect.right - 78, y, btn_w, btn_w)
+            n_plus = pygame.Rect(settings_rect.right - 52, y, btn_w, btn_w)
+            pygame.draw.rect(screen, BOJA_SUBT, n_minus, 1)
+            pygame.draw.rect(screen, BOJA_SUBT, n_plus, 1)
+            screen.blit(font_small.render("-", True, BOJA_TEKST), (n_minus.x + 5, n_minus.y - 1))
+            screen.blit(font_small.render("+", True, BOJA_TEKST), (n_plus.x + 4, n_plus.y - 1))
+            settings_controls.append(("dec_noise", None, n_minus))
+            settings_controls.append(("inc_noise", None, n_plus))
+
+            save_rect = pygame.Rect(settings_rect.x + 16, settings_rect.bottom - 60, settings_rect.width - 32, 28)
+            pygame.draw.rect(screen, (50, 90, 140), save_rect)
+            pygame.draw.rect(screen, (90, 120, 160), save_rect, 1)
+            save_text = font_small.render("Spremi", True, BOJA_TEKST)
+            screen.blit(save_text, (save_rect.centerx - save_text.get_width() // 2, save_rect.centery - save_text.get_height() // 2))
+            settings_controls.append(("save", None, save_rect))
+
+            if pending_message:
+                msg_x = settings_rect.x + 16
+                msg_y = save_rect.y - 34
+                if isinstance(pending_message, list):
+                    for line in pending_message:
+                        msg = font_small.render(line, True, BOJA_SUBT)
+                        screen.blit(msg, (msg_x, msg_y))
+                        msg_y += 16
+                else:
+                    msg = font_small.render(pending_message, True, BOJA_SUBT)
+                    screen.blit(msg, (msg_x, msg_y))
+            if noise_pending is not None:
+                msg = font_small.render("Promjena pogreske je na cekanju", True, BOJA_SUBT)
+                screen.blit(msg, (settings_rect.x + 16, save_rect.y - 50))
+
+        nacrtaj_postavke()
 
         # Panel
         pygame.draw.rect(screen, BOJA_PANEL, panel_rect)
@@ -354,6 +781,10 @@ def main() -> None:
         # Naslov
         t = font_title.render("GoT Axelrod — Mapa", True, BOJA_TEKST)
         screen.blit(t, (panel_rect.x + 16, 14))
+        if game_mode:
+            mode_label = "Simulacija strategija" if game_mode == "sim" else "Game of Thrones"
+            mode_text = font_small.render(mode_label, True, BOJA_SUBT)
+            screen.blit(mode_text, (mapa_rect.centerx - mode_text.get_width() // 2, 12))
         sub = font_small.render(f"Sezona: {sezona} | {'PAUZA' if pauza else 'RUN'} | brzina: {brzina:.1f}/s", True, BOJA_SUBT)
         screen.blit(sub, (panel_rect.x + 16, 44))
 
@@ -363,9 +794,9 @@ def main() -> None:
         screen.blit(ctrl1, (panel_rect.x + 16, 70))
         screen.blit(ctrl2, (panel_rect.x + 16, 92))
 
-        # Legenda boja 
-        legend_x = 16
-        legend_y = 16
+        # Legenda boja (desno, uz mapu)
+        legend_x = mapa_rect.right - 160
+        legend_y = mapa_rect.y + 14
         legend_items = [
             (BOJA_SS, "Savez (S,S)"),
             (BOJA_IZDAJA, "Izdaja (S/I)"),
@@ -397,6 +828,8 @@ def main() -> None:
         hovered_edge_dist = 9999.0
         for key, d in zadnji_ishodi.items():
             a, b = key
+            if a not in pozicije or b not in pozicije:
+                continue
             x1, y1 = pozicije[a]
             x2, y2 = pozicije[b]
             col = boja_veze(d.potez_a, d.potez_b)
@@ -579,6 +1012,8 @@ def main() -> None:
                         spade_session.stop()
                     pygame.quit()
                     sys.exit(0)
+                if screen_mode == "menu":
+                    continue
                 elif event.key == pygame.K_SPACE:
                     pauza = not pauza
                 elif event.key == pygame.K_n:
@@ -593,7 +1028,14 @@ def main() -> None:
                 elif event.key == pygame.K_r:
                     if spade_session:
                         spade_session.stop()
-                    agenti, sim, sezona, kuce, zadnji_ishodi, log, total_suradnje, total_poteza, last_season_pct, agent_stats, global_pct_by_season, learning_pct_by_season, learning_agent, pair_stats, rank_stats, spade_session, spade_result_q, spade_state = reset()
+                    settings_draft = deepcopy(settings_current)
+                    pending_message = ""
+                    agenti, sim, sezona, kuce, zadnji_ishodi, log, total_suradnje, total_poteza, last_season_pct, agent_stats, global_pct_by_season, learning_pct_by_season, learning_rank_by_season, learning_agent, pair_stats, rank_stats, spade_session, spade_result_q, spade_state = reset(settings_current)
+                    era_reset()
+                    if game_mode == "got":
+                        got_noise_base = noise_rate
+                        got_bonus_8 = False
+                        got_bonus_4 = False
                     pozicije = pozicioniraj_kuce(
                         kuce,
                         cx=mapa_rect.centerx,
@@ -619,12 +1061,106 @@ def main() -> None:
                         sezona,
                         global_pct_by_season,
                         learning_pct_by_season,
+                        learning_rank_by_season,
                         learning_agent,
                         pair_stats,
                         rank_stats,
                     )
 
-        if not pauza:
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                if screen_mode == "menu":
+                    mode_id = None
+                    for mid, rect in menu_buttons:
+                        if rect.collidepoint(mx, my):
+                            mode_id = mid
+                            break
+                    if mode_id is None:
+                        continue
+                    # set mode and reset state
+                    screen_mode = "sim"
+                    game_mode = mode_id
+                    if game_mode == "got":
+                        got_noise_base = noise_rate
+                        got_bonus_8 = False
+                        got_bonus_4 = False
+                    if spade_session:
+                        spade_session.stop()
+                    settings_draft = deepcopy(settings_current)
+                    pending_message = ""
+                    (
+                        agenti,
+                        sim,
+                        sezona,
+                        kuce,
+                        zadnji_ishodi,
+                        log,
+                        total_suradnje,
+                        total_poteza,
+                        last_season_pct,
+                        agent_stats,
+                        global_pct_by_season,
+                        learning_pct_by_season,
+                        learning_rank_by_season,
+                        learning_agent,
+                        pair_stats,
+                        rank_stats,
+                        spade_session,
+                        spade_result_q,
+                        spade_state,
+                    ) = reset(settings_current)
+                    era_reset()
+                    pozicije = pozicioniraj_kuce(
+                        kuce,
+                        cx=mapa_rect.centerx,
+                        cy=mapa_rect.centery,
+                        radius=min(mapa_rect.width, mapa_rect.height) // 3
+                    )
+                    grbovi = ucitaj_grbove(kuce)
+                    continue
+
+                for control in settings_controls:
+                    if len(control) == 3:
+                        action, sid, rect = control
+                        key = None
+                    else:
+                        action, sid, key, rect = control
+                    if not rect.collidepoint(mx, my):
+                        continue
+                    if action == "toggle" and sid in settings_draft:
+                        settings_draft[sid]["enabled"] = not settings_draft[sid]["enabled"]
+                    elif action == "dec" and sid in settings_draft:
+                        settings_draft[sid]["count"] = max(0, settings_draft[sid]["count"] - 1)
+                    elif action == "inc" and sid in settings_draft:
+                        max_count = STRATEGIJA_MAX.get(sid, 0)
+                        settings_draft[sid]["count"] = min(max_count, settings_draft[sid]["count"] + 1)
+                    elif action == "dec_noise":
+                        noise_pending = noise_rate if noise_pending is None else noise_pending
+                        noise_pending = max(0.0, noise_pending - 0.01)
+                    elif action == "inc_noise":
+                        noise_pending = noise_rate if noise_pending is None else noise_pending
+                        noise_pending = min(0.50, noise_pending + 0.01)
+                    elif action == "dec_param" and sid in settings_draft:
+                        metas = PARAM_META.get(sid, [])
+                        if key:
+                            meta = next((m for m in metas if m["key"] == key), None)
+                            if meta:
+                                cur = settings_draft[sid].get(key, meta["min"])
+                                cur = max(meta["min"], cur - meta["step"])
+                                settings_draft[sid][key] = cur
+                    elif action == "inc_param" and sid in settings_draft:
+                        metas = PARAM_META.get(sid, [])
+                        if key:
+                            meta = next((m for m in metas if m["key"] == key), None)
+                            if meta:
+                                cur = settings_draft[sid].get(key, meta["min"])
+                                cur = min(meta["max"], cur + meta["step"])
+                                settings_draft[sid][key] = cur
+                    elif action == "save":
+                        settings_pending = deepcopy(settings_draft)
+                        pending_message = ["Promjene ce se primijeniti", "na pocetku nove sezone"]
+
+        if screen_mode != "menu" and not pauza:
             akumulirano += dt
             period = 1.0 / brzina
             if akumulirano >= period:
@@ -634,7 +1170,7 @@ def main() -> None:
                 else:
                     odigraj_jednu_sezonu()
 
-        if USE_SPADE:
+        if screen_mode != "menu" and USE_SPADE:
             _poll_spade_rezultat()
 
         nacrtaj()
