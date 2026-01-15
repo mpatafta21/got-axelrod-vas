@@ -10,15 +10,15 @@ import pygame
 
 
 def init_stats(agenti):
-    agent_stats = {a.naziv: {"suradnje": 0, "izdaje": 0, "poteza": 0} for a in agenti}
+    agent_stats = {a["naziv"]: {"suradnje": 0, "izdaje": 0, "poteza": 0} for a in agenti}
     global_pct_by_season: List[float] = []
     learning_pct_by_season: List[float] = []
     learning_rank_by_season: List[int] = []
-    learning_agent = next((a.naziv for a in agenti if a.je_ucenje), "")
+    learning_agent = next((a["naziv"] for a in agenti if a.get("je_ucenje")), "")
     pair_stats: Dict[Tuple[str, str], Dict[str, int]] = {}
     rank_stats = {
-        "top3": {a.naziv: 0 for a in agenti},
-        "last": {a.naziv: 0 for a in agenti},
+        "top3": {a["naziv"]: 0 for a in agenti},
+        "last": {a["naziv"]: 0 for a in agenti},
     }
     return agent_stats, global_pct_by_season, learning_pct_by_season, learning_rank_by_season, learning_agent, pair_stats, rank_stats
 
@@ -75,14 +75,14 @@ def update_stats_for_season(
             pair_stats[key]["si"] += 1
         pair_stats[key]["total"] += 1
 
-    poredak = sorted(agenti, key=lambda x: x.bodovi, reverse=True)
+    poredak = sorted(agenti, key=lambda x: x["bodovi"], reverse=True)
     for a in poredak[:3]:
-        rank_stats["top3"][a.naziv] += 1
+        rank_stats["top3"][a["naziv"]] += 1
     if poredak:
-        rank_stats["last"][poredak[-1].naziv] += 1
+        rank_stats["last"][poredak[-1]["naziv"]] += 1
     if learning_agent:
         for idx, a in enumerate(poredak, start=1):
-            if a.naziv == learning_agent:
+            if a["naziv"] == learning_agent:
                 learning_rank_by_season.append(idx)
                 break
 
@@ -99,16 +99,16 @@ def update_stats_for_season(
 def build_stats(agenti, agent_stats, sezona):
     agent_rows = []
     for a in agenti:
-        moves = agent_stats[a.naziv]["poteza"]
-        coop = agent_stats[a.naziv]["suradnje"]
-        defect = agent_stats[a.naziv]["izdaje"]
+        moves = agent_stats[a["naziv"]]["poteza"]
+        coop = agent_stats[a["naziv"]]["suradnje"]
+        defect = agent_stats[a["naziv"]]["izdaje"]
         coop_pct = 100.0 * coop / moves if moves > 0 else 0.0
         defect_pct = 100.0 * defect / moves if moves > 0 else 0.0
-        avg_season = a.bodovi / sezona if sezona > 0 else 0.0
+        avg_season = a["bodovi"] / sezona if sezona > 0 else 0.0
         agent_rows.append({
-            "kuca": a.naziv,
-            "strategija": a.naziv_strategije,
-            "bodovi": a.bodovi,
+            "kuca": a["naziv"],
+            "strategija": a["naziv_strategije"],
+            "bodovi": a["bodovi"],
             "prosjek": avg_season,
             "suradnja_pct": coop_pct,
             "izdaja_pct": defect_pct,
@@ -116,16 +116,16 @@ def build_stats(agenti, agent_stats, sezona):
 
     strategije = {}
     for a in agenti:
-        s = a.naziv_strategije
+        s = a["naziv_strategije"]
         if s not in strategije:
             strategije[s] = {
                 "bodovi": [],
                 "suradnje": 0,
                 "poteza": 0,
             }
-        strategije[s]["bodovi"].append(a.bodovi)
-        strategije[s]["suradnje"] += agent_stats[a.naziv]["suradnje"]
-        strategije[s]["poteza"] += agent_stats[a.naziv]["poteza"]
+        strategije[s]["bodovi"].append(a["bodovi"])
+        strategije[s]["suradnje"] += agent_stats[a["naziv"]]["suradnje"]
+        strategije[s]["poteza"] += agent_stats[a["naziv"]]["poteza"]
 
     strategija_rows = []
     for s, data in strategije.items():
@@ -168,13 +168,13 @@ def build_pair_stats(pair_stats):
 def build_learning_stats(agenti, learning_agent):
     if not learning_agent:
         return []
-    agent = next((a for a in agenti if a.naziv == learning_agent), None)
+    agent = next((a for a in agenti if a["naziv"] == learning_agent), None)
     if agent is None:
         return []
     rows = []
-    protivnici = [(a.naziv, a.naziv_strategije) for a in agenti if a.naziv != learning_agent]
+    protivnici = [(a["naziv"], a["naziv_strategije"]) for a in agenti if a["naziv"] != learning_agent]
     for p, strategija_naziv in sorted(protivnici):
-        stat = agent.statistika_ucenja.get(p, {})
+        stat = agent["statistika_ucenja"].get(p, {})
         s = stat.get("S", {"n": 0.0, "avg": 0.0})
         i = stat.get("I", {"n": 0.0, "avg": 0.0})
         n_s = int(s.get("n", 0.0))

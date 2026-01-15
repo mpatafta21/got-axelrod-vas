@@ -118,7 +118,7 @@ async def odigraj_sezonu(behaviour, kuca_agenti, active_names=None, noise_rate=0
         await _posalji_update(behaviour, a, b, exec_a, exec_b, bod_a)
         await _posalji_update(behaviour, b, a, exec_b, exec_a, bod_b)
 
-    learning_stats.update(await _request_learning_stats(behaviour, aktivni))
+    _merge_learning_prefs(learning_stats, await _request_learning_stats(behaviour, aktivni))
 
     return {"dogadjaji": dogadjaji, "bodovi": bodovi, "learning_stats": learning_stats}
 
@@ -188,6 +188,19 @@ async def _request_learning_stats(behaviour, kuca_agenti):
             entry["pct_s_after_s"] = vals.get("pct_s_after_s", 0.0)
             entry["pct_i_after_i"] = vals.get("pct_i_after_i", 0.0)
     return stats
+
+
+def _merge_learning_prefs(target, incoming):
+    for agent_name, opps in incoming.items():
+        agent_stats = target.setdefault(agent_name, {})
+        for protivnik, vals in opps.items():
+            entry = agent_stats.setdefault(
+                protivnik,
+                {"S": {"n": 0.0, "avg": 0.0}, "I": {"n": 0.0, "avg": 0.0}},
+            )
+            for key in ("pref_after_s", "pref_after_i", "pct_s_after_s", "pct_i_after_i"):
+                if key in vals:
+                    entry[key] = vals[key]
 
 
 async def _posalji_request(behaviour, agent, protivnik):

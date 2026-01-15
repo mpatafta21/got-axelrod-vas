@@ -12,9 +12,6 @@ from typing import Dict, List, Tuple
 
 import pygame
 
-from agent import KucaAgent
-from engine import Simulacija
-import strategije as st
 from spade_orchestrator import SpadeSession, KUCe as SPADE_KUCE
 
 Potez = str  # "S" ili "I"
@@ -45,18 +42,18 @@ USE_SPADE = True
 ERA_LEN = 10
 
 HOUSE_DEFS = [
-    {"naziv": "Stark", "strategija_id": "tit_for_tat", "strategija_naziv": "TFT", "fn": st.tit_for_tat},
-    {"naziv": "Arryn", "strategija_id": "tit_for_tat", "strategija_naziv": "TFT", "fn": st.tit_for_tat},
-    {"naziv": "Tully", "strategija_id": "tit_for_two_tats", "strategija_naziv": "TFT-2T", "fn": st.tit_for_two_tats},
-    {"naziv": "Mormont", "strategija_id": "uvijek_suradjuj", "strategija_naziv": "Uvijek surađuj", "fn": st.uvijek_suradjuj},
-    {"naziv": "Tyrell", "strategija_id": "win_stay_lose_shift", "strategija_naziv": "WSLS (Pavlov)", "fn": st.win_stay_lose_shift},
-    {"naziv": "Martell", "strategija_id": "slucajna_0_60", "strategija_naziv": "Slučajno (60% S)", "fn": lambda moja, protiv: st.slucajna_strategija(moja, protiv, 0.60)},
-    {"naziv": "Greyjoy", "strategija_id": "sumnjivi_tit_for_tat", "strategija_naziv": "Sumnjivi TFT", "fn": st.sumnjivi_tit_for_tat},
-    {"naziv": "Frey", "strategija_id": "joss", "strategija_naziv": "JOSS (10% I)", "fn": lambda moja, protiv: st.joss(moja, protiv, p_izdaje_nakon_suradnje=0.10)},
-    {"naziv": "Lannister", "strategija_id": "always_defect", "strategija_naziv": "Uvijek izdaja", "fn": st.uvijek_izdaj},
-    {"naziv": "Bolton", "strategija_id": "always_defect", "strategija_naziv": "Uvijek izdaja", "fn": st.uvijek_izdaj},
-    {"naziv": "Baratheon", "strategija_id": "grim_trigger", "strategija_naziv": "Grim Trigger", "fn": st.grim_trigger},
-    {"naziv": "Targaryen", "strategija_id": "learning_tft", "strategija_naziv": "Učenje (ε=0.10)", "fn": st.tit_for_tat, "je_ucenje": True, "epsilon": 0.10},
+    {"naziv": "Stark", "strategija_id": "tit_for_tat"},
+    {"naziv": "Arryn", "strategija_id": "tit_for_tat"},
+    {"naziv": "Tully", "strategija_id": "tit_for_two_tats"},
+    {"naziv": "Mormont", "strategija_id": "uvijek_suradjuj"},
+    {"naziv": "Tyrell", "strategija_id": "win_stay_lose_shift"},
+    {"naziv": "Martell", "strategija_id": "slucajna_0_60"},
+    {"naziv": "Greyjoy", "strategija_id": "sumnjivi_tit_for_tat"},
+    {"naziv": "Frey", "strategija_id": "joss"},
+    {"naziv": "Lannister", "strategija_id": "always_defect"},
+    {"naziv": "Bolton", "strategija_id": "always_defect"},
+    {"naziv": "Baratheon", "strategija_id": "grim_trigger"},
+    {"naziv": "Targaryen", "strategija_id": "learning_tft", "je_ucenje": True, "epsilon": 0.10},
 ]
 
 STRATEGIJA_LABELS = {
@@ -64,6 +61,19 @@ STRATEGIJA_LABELS = {
     "tit_for_two_tats": "TFT-2T",
     "uvijek_suradjuj": "Uvijek surađuj",
     "win_stay_lose_shift": "WSLS",
+    "slucajna_0_60": "Slučajno (60% S)",
+    "sumnjivi_tit_for_tat": "Sumnjivi TFT",
+    "joss": "JOSS (10% I)",
+    "always_defect": "Uvijek izdaja",
+    "grim_trigger": "Grim Trigger",
+    "learning_tft": "Učenje (ε=0.10)",
+}
+
+STRATEGIJA_NAZIVI = {
+    "tit_for_tat": "TFT",
+    "tit_for_two_tats": "TFT-2T",
+    "uvijek_suradjuj": "Uvijek surađuj",
+    "win_stay_lose_shift": "WSLS (Pavlov)",
     "slucajna_0_60": "Slučajno (60% S)",
     "sumnjivi_tit_for_tat": "Sumnjivi TFT",
     "joss": "JOSS (10% I)",
@@ -133,28 +143,25 @@ def _build_agents_from_settings(settings):
             continue
         pool = by_sid.get(sid, [])
         for d in pool[: cfg["count"]]:
-            fn = d["fn"]
             if sid == "slucajna_0_60":
                 p = cfg.get("param", 0.60)
-                fn = lambda moja, protiv, p=p: st.slucajna_strategija(moja, protiv, p)
                 strategija_naziv = f"Slučajno ({int(round(p * 100))}% S)"
-            if sid == "joss":
+            elif sid == "joss":
                 p = cfg.get("param", 0.10)
-                fn = lambda moja, protiv, p=p: st.joss(moja, protiv, p_izdaje_nakon_suradnje=p)
                 strategija_naziv = f"JOSS ({int(round(p * 100))}% I)"
-            if sid == "learning_tft":
+            elif sid == "learning_tft":
                 p = cfg.get("epsilon", d.get("epsilon", 0.10))
                 strategija_naziv = f"Učenje (ε={p:.2f})"
-            if sid not in ("slucajna_0_60", "joss", "learning_tft"):
-                strategija_naziv = d["strategija_naziv"]
+            else:
+                strategija_naziv = STRATEGIJA_NAZIVI.get(sid, sid)
             agenti.append(
-                KucaAgent(
-                    d["naziv"],
-                    strategija_naziv,
-                    fn,
-                    je_ucenje=d.get("je_ucenje", False),
-                    epsilon=cfg.get("epsilon", d.get("epsilon", 0.10)),
-                )
+                {
+                    "naziv": d["naziv"],
+                    "naziv_strategije": strategija_naziv,
+                    "bodovi": 0,
+                    "je_ucenje": d.get("je_ucenje", False),
+                    "statistika_ucenja": {},
+                }
             )
     return agenti
 
@@ -196,7 +203,7 @@ class Dogadjaj:
     bod_b: int
 
 
-def kreiraj_agente(settings=None) -> List[KucaAgent]:
+def kreiraj_agente(settings=None) -> List[dict]:
     if settings is None:
         settings = _build_default_settings()
     return _build_agents_from_settings(settings)
@@ -323,11 +330,10 @@ def main() -> None:
     settings_rect = pygame.Rect(0, 0, settings_w, H)
 
     # Stanje simulacije
-    def reset(settings_current, start_spade: bool = True) -> Tuple[List[KucaAgent], Simulacija, int, List[str], Dict[Tuple[str, str], Dogadjaj], List[str], int, int, float, Dict[str, Dict[str, int]], List[float], List[float], str, Dict[Tuple[str, str], Dict[str, int]], Dict[str, Dict[str, int]], SpadeSession | None, Queue, dict]:
+    def reset(settings_current, start_spade: bool = True) -> Tuple[List[dict], int, List[str], Dict[Tuple[str, str], Dogadjaj], List[str], int, int, float, Dict[str, Dict[str, int]], List[float], List[float], str, Dict[Tuple[str, str], Dict[str, int]], Dict[str, Dict[str, int]], SpadeSession | None, Queue, dict]:
         agenti_local = kreiraj_agente(settings_current)
-        sim_local = Simulacija(MATRICA_ISPLATE)
         sezona_local = 0
-        kuce = [a.naziv for a in agenti_local]
+        kuce = [a["naziv"] for a in agenti_local]
         zadnji_ishodi: Dict[Tuple[str, str], Dogadjaj] = {}
         log: List[str] = []
         total_suradnje = 0
@@ -343,7 +349,6 @@ def main() -> None:
             spade_session.start()
         return (
             agenti_local,
-            sim_local,
             sezona_local,
             kuce,
             zadnji_ishodi,
@@ -379,7 +384,6 @@ def main() -> None:
 
     (
         agenti,
-        sim,
         sezona,
         kuce,
         zadnji_ishodi,
@@ -420,7 +424,7 @@ def main() -> None:
 
     def _apply_pending_if_ready() -> bool:
         nonlocal settings_current, settings_draft, settings_pending, pending_message
-        nonlocal agenti, sim, sezona, kuce, zadnji_ishodi, log
+        nonlocal agenti, sezona, kuce, zadnji_ishodi, log
         nonlocal total_suradnje, total_poteza, last_season_pct
         nonlocal agent_stats, global_pct_by_season, learning_pct_by_season, learning_rank_by_season, learning_agent
         nonlocal pair_stats, rank_stats, spade_session, spade_result_q, spade_state, pozicije, grbovi
@@ -446,7 +450,6 @@ def main() -> None:
 
         (
             agenti,
-            sim,
             sezona,
             kuce,
             zadnji_ishodi,
@@ -479,7 +482,7 @@ def main() -> None:
     def era_reset():
         nonlocal era_progress, era_points
         era_progress = 0
-        era_points = {a.naziv: 0 for a in agenti}
+        era_points = {a["naziv"]: 0 for a in agenti}
 
     era_reset()
 
@@ -507,8 +510,8 @@ def main() -> None:
         elim_name = min(era_points.items(), key=lambda x: x[1])[0]
         log.insert(0, f"[S{sezona}] Eliminacija: {elim_name}")
         del log[60:]
-        agenti = [a for a in agenti if a.naziv != elim_name]
-        kuce = [a.naziv for a in agenti]
+        agenti = [a for a in agenti if a["naziv"] != elim_name]
+        kuce = [a["naziv"] for a in agenti]
         zadnji_ishodi = {
             k: v for k, v in zadnji_ishodi.items()
             if elim_name not in k
@@ -525,7 +528,7 @@ def main() -> None:
         rank_stats["top3"].pop(elim_name, None)
         rank_stats["last"].pop(elim_name, None)
         for a in agenti:
-            a.bodovi = 0
+            a["bodovi"] = 0
         era_reset()
         if game_mode == "got":
             n = len(agenti)
@@ -576,11 +579,6 @@ def main() -> None:
         season_points = _calc_season_points(dog)
         _eliminate_if_needed(season_points)
 
-    def odigraj_jednu_sezonu():
-        _apply_pending_if_ready()
-        dog = sim.odigraj_sezonu_sa_dogadjajima(agenti)
-        _primijeni_sezonu(dog)
-
     def _start_spade_sezonu():
         nonlocal spade_state
         _apply_pending_if_ready()
@@ -591,7 +589,7 @@ def main() -> None:
 
         def _worker():
             try:
-                aktivni = [a.naziv for a in agenti]
+                aktivni = [a["naziv"] for a in agenti]
                 rezultat = spade_session.play_season_sync(active_names=aktivni, noise_rate=noise_rate)
                 spade_result_q.put(("ok", rezultat))
             except Exception as exc:
@@ -613,9 +611,9 @@ def main() -> None:
             bodovi = payload["bodovi"]
             learning_stats = payload.get("learning_stats", {})
             for a in agenti:
-                a.bodovi += bodovi.get(a.naziv, 0)
-                if a.naziv in learning_stats:
-                    _merge_learning_stats(a.statistika_ucenja, learning_stats[a.naziv])
+                a["bodovi"] += bodovi.get(a["naziv"], 0)
+                if a["naziv"] in learning_stats:
+                    _merge_learning_stats(a["statistika_ucenja"], learning_stats[a["naziv"]])
             _primijeni_sezonu(dog)
         else:
             spade_state["last_error"] = str(payload)
@@ -812,7 +810,7 @@ def main() -> None:
         mx, my = pygame.mouse.get_pos()
         base_r = RADIUS_CVOR
         max_extra = 20
-        poredak = sorted(agenti, key=lambda x: x.bodovi, reverse=True)
+        poredak = sorted(agenti, key=lambda x: x["bodovi"], reverse=True)
         radius_map = {}
         n = len(poredak)
         for idx, a in enumerate(poredak):
@@ -820,7 +818,7 @@ def main() -> None:
                 scale = (n - 1 - idx) / (n - 1)
             else:
                 scale = 0.0
-            radius_map[a.naziv] = int(base_r + max_extra * scale)
+            radius_map[a["naziv"]] = int(base_r + max_extra * scale)
 
         # Veze (mapa)
         # crtaj sve parove za koje imamo zadnji ishod
@@ -878,40 +876,40 @@ def main() -> None:
         # Čvorovi kuća
         hovered = None
         for a in agenti:
-            x, y = pozicije[a.naziv]
-            r = radius_map.get(a.naziv, RADIUS_CVOR)
+            x, y = pozicije[a["naziv"]]
+            r = radius_map.get(a["naziv"], RADIUS_CVOR)
             dist = (mx - x) ** 2 + (my - y) ** 2
             if dist <= (r + 6) ** 2:
-                hovered = a.naziv
+                hovered = a["naziv"]
 
         for a in agenti:
-            x, y = pozicije[a.naziv]
-            r = radius_map.get(a.naziv, RADIUS_CVOR)
-            col = BOJA_CVOR_AKT if a.naziv == hovered else BOJA_CVOR
+            x, y = pozicije[a["naziv"]]
+            r = radius_map.get(a["naziv"], RADIUS_CVOR)
+            col = BOJA_CVOR_AKT if a["naziv"] == hovered else BOJA_CVOR
             pygame.draw.circle(screen, col, (x, y), r)
-            icon = grbovi.get(a.naziv)
+            icon = grbovi.get(a["naziv"])
             if icon:
                 size = max(8, r * 2 - 6)
                 icon_c = napravi_kruzni_grb(icon, size)
                 screen.blit(icon_c, (x - icon_c.get_width() // 2, y - icon_c.get_height() // 2))
-            outline_col = BOJA_CVOR_UCENJE if a.je_ucenje else (10, 10, 10)
-            outline_w = 3 if a.je_ucenje else 2
+            outline_col = BOJA_CVOR_UCENJE if a["je_ucenje"] else (10, 10, 10)
+            outline_w = 3 if a["je_ucenje"] else 2
             pygame.draw.circle(screen, outline_col, (x, y), r, outline_w)
 
-            if a.je_ucenje:
+            if a["je_ucenje"]:
                 t = pygame.time.get_ticks() / 1000.0
                 pulse = int(4 * (0.5 + 0.5 * math.sin(t * 4.0)))
                 pygame.draw.circle(screen, BOJA_CVOR_UCENJE, (x, y), r + 6 + pulse, 2)
 
-            label = font_small.render(a.naziv, True, BOJA_TEKST)
+            label = font_small.render(a["naziv"], True, BOJA_TEKST)
             screen.blit(label, (x - label.get_width() // 2, y + r + 6))
 
         # Tooltip
         if hovered:
-            a = next(x for x in agenti if x.naziv == hovered)
-            tip1 = font.render(f"{a.naziv}", True, BOJA_TEKST)
-            tip2 = font_small.render(f"Strategija: {a.naziv_strategije}", True, BOJA_SUBT)
-            tip3 = font_small.render(f"Bodovi: {a.bodovi}", True, BOJA_SUBT)
+            a = next(x for x in agenti if x["naziv"] == hovered)
+            tip1 = font.render(f"{a['naziv']}", True, BOJA_TEKST)
+            tip2 = font_small.render(f"Strategija: {a['naziv_strategije']}", True, BOJA_SUBT)
+            tip3 = font_small.render(f"Bodovi: {a['bodovi']}", True, BOJA_SUBT)
 
             tx, ty = mx + 12, my + 12
             w = max(tip1.get_width(), tip2.get_width(), tip3.get_width()) + 14
@@ -959,11 +957,11 @@ def main() -> None:
         if USE_SPADE:
             y0 += 18
         screen.blit(font.render("Leaderboard", True, BOJA_TEKST), (panel_rect.x + 16, y0))
-        poredak = sorted(agenti, key=lambda x: x.bodovi, reverse=True)
+        poredak = sorted(agenti, key=lambda x: x["bodovi"], reverse=True)
         y = y0 + 28
         for idx, a in enumerate(poredak[:12], start=1):
-            strategija = a.naziv_strategije[:16]
-            txt = f"{idx:>2}. {a.naziv:<10} {strategija:<16} {a.bodovi:>5}"
+            strategija = a["naziv_strategije"][:16]
+            txt = f"{idx:>2}. {a['naziv']:<10} {strategija:<16} {a['bodovi']:>5}"
             line = font_mono.render(txt, True, BOJA_TEKST)
             screen.blit(line, (panel_rect.x + 16, y))
             y += 18
@@ -1017,10 +1015,7 @@ def main() -> None:
                 elif event.key == pygame.K_SPACE:
                     pauza = not pauza
                 elif event.key == pygame.K_n:
-                    if USE_SPADE:
-                        _start_spade_sezonu()
-                    else:
-                        odigraj_jednu_sezonu()
+                    _start_spade_sezonu()
                 elif event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
                     brzina = min(20.0, brzina + 0.5)
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
@@ -1030,7 +1025,7 @@ def main() -> None:
                         spade_session.stop()
                     settings_draft = deepcopy(settings_current)
                     pending_message = ""
-                    agenti, sim, sezona, kuce, zadnji_ishodi, log, total_suradnje, total_poteza, last_season_pct, agent_stats, global_pct_by_season, learning_pct_by_season, learning_rank_by_season, learning_agent, pair_stats, rank_stats, spade_session, spade_result_q, spade_state = reset(settings_current)
+                    agenti, sezona, kuce, zadnji_ishodi, log, total_suradnje, total_poteza, last_season_pct, agent_stats, global_pct_by_season, learning_pct_by_season, learning_rank_by_season, learning_agent, pair_stats, rank_stats, spade_session, spade_result_q, spade_state = reset(settings_current)
                     era_reset()
                     if game_mode == "got":
                         got_noise_base = noise_rate
@@ -1090,7 +1085,6 @@ def main() -> None:
                     pending_message = ""
                     (
                         agenti,
-                        sim,
                         sezona,
                         kuce,
                         zadnji_ishodi,
@@ -1165,10 +1159,7 @@ def main() -> None:
             period = 1.0 / brzina
             if akumulirano >= period:
                 akumulirano = 0.0
-                if USE_SPADE:
-                    _start_spade_sezonu()
-                else:
-                    odigraj_jednu_sezonu()
+                _start_spade_sezonu()
 
         if screen_mode != "menu" and USE_SPADE:
             _poll_spade_rezultat()
