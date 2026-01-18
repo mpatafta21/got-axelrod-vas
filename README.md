@@ -6,13 +6,13 @@ Projekt je izrađen u sklopu kolegija Višeagentni sustavi.
 
 ## Cilj projekta
 
-formalno modelirati Axelrodov turnir kao MAS
+- formalno modelirati Axelrodov turnir kao MAS
 
-implementirati reaktivne i adaptivne agente
+- implementirati reaktivne i adaptivne agente
 
-analizirati dugoročno ponašanje strategija
+- analizirati dugoročno ponašanje strategija
 
-vizualno prikazati odnose suradnje i izdaje
+- vizualno prikazati odnose suradnje i izdaje
 
 ## Načini rada
 
@@ -22,27 +22,45 @@ Game of Thrones mod – eliminacijski turnir s postupnim izbacivanjem kuća i no
 
 ## Arhitektura
 
-SPADE agenti – kuće
+- SPADE agenti – kuće
 
-Orchestrator – upravljanje rundama i sinkronizacija
+- Orchestrator – upravljanje rundama i sinkronizacija
 
-Engine – pravila i bodovanje
+- Engine – pravila i bodovanje
 
-Pygame UI – vizualizacija mreže odnosa i statistike
+- Pygame UI – vizualizacija mreže odnosa i statistike
 
-Komunikacija se odvija porukama (XMPP).
+- Komunikacija se odvija porukama (XMPP).
 
 ## Tehnologije
 
-Python
+- Python
 
-SPADE 4.1.2
+- SPADE 4.1.2
 
-Pygame
+- Pygame
 
-ejabberd (XMPP)
+- ejabberd (XMPP)
 
-WSL
+- WSL
+
+## Preduvjeti
+
+Za pokretanje projekta potrebno je imati:
+
+- Python 3.10+
+
+- XMPP server (ejabberd)
+
+Sve Python biblioteke instaliraju se pomoću requirements.txt:
+
+`pip install -r requirements.txt`
+
+Projekt je razvijan i testiran u Linux okruženju (WSL2 na Windowsu).
+
+
 
 ## Pokretanje
 `python ui_pygame.py`
+
+
