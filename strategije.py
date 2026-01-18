@@ -52,7 +52,6 @@ def win_stay_lose_shift(moja_povijest: List[Potez], povijest_protivnika: List[Po
     moj_zadnji = moja_povijest[-1]
     protivnikov_zadnji = povijest_protivnika[-1] if povijest_protivnika else "S"
 
-    # "Win" ako smo se uskladili (S,S) ili (I,S) (ovisno o interpretaciji),
     # ali u PD-u tipično WSLS: ponovi ako je dobio visoku nagradu.
     # - ponovi potez ako je ishod bio (S,S) ili (I,S)
     # - promijeni u ostalim slučajevima

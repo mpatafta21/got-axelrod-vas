@@ -281,7 +281,7 @@ class SpadeOrchestrator:
             await agent.start(auto_register=auto_register)
             self.agenti.append(agent)
 
-        # kratko čekanje da se agenti spoje
+        # čekanje da se agenti spoje
         await asyncio.sleep(1)
 
     async def ugasi_agente(self):

@@ -316,6 +316,8 @@ def main() -> None:
     W, H = 1720, 700
     screen = pygame.display.set_mode((W, H))
     clock = pygame.time.Clock()
+    menu_bg = pygame.image.load(os.path.join("assets", "background.png")).convert()
+    menu_bg = pygame.transform.smoothscale(menu_bg, (W, H))
 
     font = pygame.font.SysFont("Segoe UI", 18)
     font_small = pygame.font.SysFont("Segoe UI", 16)
@@ -653,18 +655,20 @@ def main() -> None:
         screen.fill(BOJA_POZADINA)
 
         if screen_mode == "menu":
-            title = font_title.render("Odaberi mod", True, BOJA_TEKST)
-            screen.blit(title, (mapa_rect.centerx - title.get_width() // 2, 120))
+            screen.blit(menu_bg, (0, 0))
+            menu_title = pygame.font.SysFont("Segoe UI", 30)
+            title = menu_title.render("Odaberi mod", True, BOJA_TEKST)
+            screen.blit(title, (W // 2 - title.get_width() // 2, 120))
             btn_w = 320
             btn_h = 48
-            btn_x = mapa_rect.centerx - btn_w // 2
+            btn_x = W // 2 - btn_w // 2
             btn_y = 200
             menu_buttons.clear()
             sim_rect = pygame.Rect(btn_x, btn_y, btn_w, btn_h)
             got_rect = pygame.Rect(btn_x, btn_y + 70, btn_w, btn_h)
             pygame.draw.rect(screen, (50, 90, 140), sim_rect)
             pygame.draw.rect(screen, (90, 120, 160), sim_rect, 1)
-            pygame.draw.rect(screen, (50, 90, 140), got_rect)
+            pygame.draw.rect(screen, (178, 34, 34), got_rect)
             pygame.draw.rect(screen, (90, 120, 160), got_rect, 1)
             sim_txt = font_small.render("Simulacija strategija", True, BOJA_TEKST)
             got_txt = font_small.render("Game of Thrones", True, BOJA_TEKST)

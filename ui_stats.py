@@ -1,6 +1,3 @@
-# ui_stats.py
-# Helpers for stats calculation, export, and overlay rendering.
-
 import csv
 import os
 import statistics
